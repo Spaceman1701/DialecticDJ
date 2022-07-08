@@ -1,35 +1,55 @@
-use rspotify::{ClientCredsSpotify, Credentials, Token, clients::BaseClient};
+use std::ops::Deref;
+
+use rocket::State;
+use rspotify::{ClientCredsSpotify, Credentials, Token, clients::{BaseClient, OAuthClient}, OAuth, AuthCodeSpotify};
+
+
+mod client;
 
 #[macro_use]
 extern crate rocket;
 
 #[launch]
-fn rocket() -> _ {
-    rocket::build().mount("/hello", routes![hello, get_auth])
+async fn rocket() -> _ {
+    let client = initalize_spotify().await.unwrap();
+    let spotify_config = SpotifyConfig {
+        client,
+    };
+
+    rocket::build().mount("/", routes![search]).manage(spotify_config)
 }
 
-#[get("/<name>/<age>")]
-fn hello(name: &str, age: u8) -> String {
-    format!("Hello, {} year old named {}!", age, name)
+struct SpotifyConfig {
+    client: ClientCredsSpotify, //BaseClient requires "Clone" which means it can't be used as a dyn trait object :/
+    // Seriously consider forking the library to solve this problem
 }
 
-#[get("/auth")]
-async fn get_auth() -> Option<String> {
+
+
+async fn initalize_spotify() -> Option<ClientCredsSpotify> {
+
     let creds = Credentials::from_env();
     if creds.is_none() {
+        println!("No credentials found in the enviornment, crashing!");
         return None;
     }
     let mut spotify_client = ClientCredsSpotify::new(creds.unwrap());
     let token_response = spotify_client.request_token();
     let token_result = token_response.await;
-    if token_result.is_err() {
-        println!("AUTH ERROR: {}", token_result.err().unwrap());
-        return None;
+    if let Err(err) = token_result {
+        println!("Spotify auth failed: {}", err);
+        None
+    } else {
+        Some(spotify_client)
     }
+}
 
-    let search = spotify_client.search("Gordon Lightfoot", &rspotify::model::SearchType::Artist, None, None, Some(5), None).await;
-    if search.is_err() {
-        println!("SEARCH ERROR: {}", search.err().unwrap());
+
+#[get("/search")]
+async fn search(state: &State<SpotifyConfig>) -> Option<String> {
+    let search = state.client.search("Gordon Lightfoot", &rspotify::model::SearchType::Artist, None, None, Some(5), None).await;
+    if let Err(err) = search {
+        println!("SEARCH ERROR: {}", err);
         return None;
     }
     let real_search = search.unwrap();
