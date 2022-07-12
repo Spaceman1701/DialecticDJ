@@ -45,9 +45,9 @@ async fn initalize_spotify() -> Option<ClientCredsSpotify> {
 }
 
 
-#[get("/search")]
-async fn search(state: &State<SpotifyConfig>) -> Option<String> {
-    let search = state.client.search("Gordon Lightfoot", &rspotify::model::SearchType::Artist, None, None, Some(5), None).await;
+#[post("/search", data = "<query>")]
+async fn search(state: &State<SpotifyConfig>, query: String) -> Option<String> {
+    let search = state.client.search(&query, &rspotify::model::SearchType::Artist, None, None, Some(5), None).await;
     if let Err(err) = search {
         println!("SEARCH ERROR: {}", err);
         return None;
