@@ -1,8 +1,9 @@
 use std::ops::Deref;
 
 use rocket::State;
+use rocket::serde::json::Json;
 use rspotify::{ClientCredsSpotify, Credentials, Token, clients::{BaseClient, OAuthClient}, OAuth, AuthCodeSpotify};
-
+use core::{self, DDJ::SearchResult};
 
 mod client;
 
@@ -46,13 +47,15 @@ async fn initalize_spotify() -> Option<ClientCredsSpotify> {
 
 
 #[post("/search", data = "<query>")]
-async fn search(state: &State<SpotifyConfig>, query: String) -> Option<String> {
-    let search = state.client.search(&query, &rspotify::model::SearchType::Artist, None, None, Some(5), None).await;
+async fn search(state: &State<SpotifyConfig>, query: String) -> Option<Json<SearchResult>> {
+    let search = state.client.search(&query, &rspotify::model::SearchType::Track, None, None, Some(5), None).await;
     if let Err(err) = search {
         println!("SEARCH ERROR: {}", err);
         return None;
     }
     let real_search = search.unwrap();
 
-    return Some(format!("{:#?}", real_search));
+    let wrapped_result = SearchResult(real_search);
+
+    return Some(Json(wrapped_result));
 }

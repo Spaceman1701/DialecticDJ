@@ -27,9 +27,21 @@ fn main() {
 
     match args.command {
         Subcommands::Search { query } => {
-            client.search(&query);
-            println!("search query is: {}", query);
+            let res = client.search(&query);
+            if let Err(err) = res {
+                println!("SEARCH FAILED: {}", err);
+                return;
+            }
 
+            match res.unwrap().0 {
+                rspotify::model::SearchResult::Tracks(tracks) => {
+                    if let Some(track) = tracks.items.first() {
+                        println!("track: {}", track.name);
+                        println!("link: {:#?}", track.external_urls.get("spotify").unwrap());
+                    }
+                }
+                _ => {}
+            }
 
         }
     }

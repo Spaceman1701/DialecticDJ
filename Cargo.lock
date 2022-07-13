@@ -108,6 +108,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 name = "backend"
 version = "0.1.0"
 dependencies = [
+ "core",
  "rocket",
  "rspotify",
 ]
@@ -231,7 +232,12 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "core",
  "reqwest",
+ "rspotify",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -250,6 +256,15 @@ dependencies = [
  "subtle",
  "time 0.3.11",
  "version_check",
+]
+
+[[package]]
+name = "core"
+version = "0.1.0"
+dependencies = [
+ "rspotify",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1270,6 +1285,7 @@ dependencies = [
  "rocket_codegen",
  "rocket_http",
  "serde",
+ "serde_json",
  "state",
  "tempfile",
  "time 0.3.11",
