@@ -3,7 +3,7 @@ pub mod DialecticDj {
 
     use rspotify::{
         self,
-        model::{Restriction, SimplifiedAlbum, FullTrack, Id},
+        model::{FullTrack, Id, Restriction, SimplifiedAlbum},
     };
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
@@ -11,7 +11,30 @@ pub mod DialecticDj {
     #[repr(transparent)]
     #[derive(Debug, Serialize, Deserialize)]
     pub struct SearchResult {
-        tracks: Vec<DJTrack>,
+        pub tracks: Vec<DJTrack>,
+    }
+
+    impl SearchResult {
+        pub fn new() -> SearchResult {
+            return SearchResult { tracks: Vec::new() };
+        }
+    }
+
+    impl From<Vec<FullTrack>> for SearchResult {
+        fn from(tracks: Vec<FullTrack>) -> Self {
+            let mut result = SearchResult {
+                tracks: Vec::with_capacity(tracks.len())
+            };
+
+            for t in &tracks {
+                let dj_track = DJTrack::from_rspotify(t);
+                if let Some(valid_track) = dj_track {
+                    result.tracks.push(valid_track);
+                }
+            }
+
+            result
+        }
     }
 
     #[repr(transparent)]
@@ -57,7 +80,6 @@ pub mod DialecticDj {
             if source.id.is_none() {
                 return None; //Can't use tracks which don't have an ID in the DJ model
             }
-
 
             return Some(DJTrack {
                 album: source.album.clone(),

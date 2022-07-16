@@ -33,15 +33,29 @@ fn main() {
                 return;
             }
 
-            match res.unwrap().0 {
-                rspotify::model::SearchResult::Tracks(tracks) => {
-                    if let Some(track) = tracks.items.first() {
-                        println!("track: {}", track.name);
-                        println!("link: {:#?}", track.external_urls.get("spotify").unwrap());
-                    }
-                }
-                _ => {}
+            if let Err(err) = res {
+                panic!("failed: {}", err);
             }
+            let unwrapped = res.unwrap();
+            let first = unwrapped.tracks.first();
+            match first {
+                Some(track) => {
+                    let name = &track.name;
+                    let author = track.album.artists.first().map(|artist| &artist.name[..]).unwrap_or("unknown");
+                    let duration = &track.duration.as_secs();
+
+                    println!("--- Top Result ---");
+                    println!("Name:     {}", name);
+                    println!("By:       {}", author);
+                    println!("Duration: {} seconds", duration);
+                    println!("Link:     {}", track.external_urls.get("spotify").unwrap())
+                }
+
+                None => {
+                    println!("no track found");
+                }
+            }
+
         }
     }
 }
