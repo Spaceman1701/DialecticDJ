@@ -32,13 +32,8 @@ fn main() {
                 println!("SEARCH FAILED: {}", err);
                 return;
             }
-
-            if let Err(err) = res {
-                panic!("failed: {}", err);
-            }
             let unwrapped = res.unwrap();
-            let first = unwrapped.tracks.first();
-            match first {
+            match unwrapped.tracks.first() {
                 Some(track) => {
                     let name = &track.name;
                     let author = track.album.artists.first().map(|artist| &artist.name[..]).unwrap_or("unknown");
