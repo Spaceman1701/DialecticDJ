@@ -1,21 +1,15 @@
-use anyhow::Result;
-use core::{self, DialecticDj::SearchResult};
-use persistence::{DataStore, TrackInfo};
-use rocket::tokio::sync::RwLock;
-use rocket::State;
-use rocket::{response::status::BadRequest, serde::json::Json};
-use rspotify::{
-    clients::{BaseClient, OAuthClient},
-    model::{Id, TrackId},
-    AuthCodeSpotify, ClientCredsSpotify, Credentials, OAuth,
-};
-use std::collections::{HashMap, HashSet};
+use persistence::DataStore;
+
+use rspotify::{clients::OAuthClient, AuthCodeSpotify, Credentials, OAuth};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 mod client;
 mod persistence;
+mod player;
+mod routes;
 
 #[macro_use]
 extern crate rocket;
@@ -23,21 +17,43 @@ extern crate rocket;
 #[launch]
 async fn rocket() -> _ {
     let client = initalize_spotify().await.unwrap();
-    let spotify_config = Arc::new(SpotifyConfig {
-        client,
+    let spotify = Arc::new(client);
+    let spotify_config = Arc::new(DjState {
+        client: spotify.clone(),
         data_store: DataStore::new(),
     });
 
-    let (tx, mut rx) = mpsc::channel::<NonEmptyQueueCommand>(2);
+    let (tx, rx) = mpsc::channel::<NonEmptyQueueCommand>(2);
 
-    let background_state = spotify_config.clone();
+    start_player_thread(&spotify_config, rx);
+
+    let player_cmd_tx = player::start_player_thread(spotify);
+
+    rocket::build()
+        .mount(
+            "/",
+            routes![
+                routes::search,
+                routes::play_track,
+                routes::add_track_to_queue,
+                routes::get_queued_tracks
+            ],
+        )
+        .manage(spotify_config)
+        .manage(player_cmd_tx)
+}
+
+fn start_player_thread(state: &Arc<DjState>, command_reciever: Receiver<NonEmptyQueueCommand>) {
+    let cloned_state = state.clone();
+    let mut rx = command_reciever;
+
     tokio::task::spawn(async move {
         loop {
             rx.recv().await;
-            let first = background_state.data_store.pop_first_track().await.unwrap();
+            let first = cloned_state.data_store.pop_first_track().await.unwrap();
             println!("playing {}", first.name);
 
-            background_state
+            cloned_state
                 .client
                 .add_item_to_queue(&first.id, None)
                 .await
@@ -46,24 +62,12 @@ async fn rocket() -> _ {
             tokio::time::sleep(first.duration - Duration::from_secs(10)).await;
         }
     });
-
-    rocket::build()
-        .mount(
-            "/",
-            routes![search, play_track, add_track_to_queue, get_queued_tracks],
-        )
-        .manage(spotify_config)
-        .manage(PlayerCommandBuffer { tx: tx })
 }
 
-struct PlayerCommandBuffer {
-    tx: Sender<NonEmptyQueueCommand>,
-}
+pub struct NonEmptyQueueCommand;
 
-struct NonEmptyQueueCommand;
-
-struct SpotifyConfig {
-    client: AuthCodeSpotify, //BaseClient requires "Clone" which means it can't be used as a dyn trait object :/
+pub struct DjState {
+    client: Arc<AuthCodeSpotify>, //BaseClient requires "Clone" which means it can't be used as a dyn trait object :/
     // Seriously consider forking the library to solve this problem
     data_store: DataStore,
 }
@@ -95,80 +99,4 @@ fn scopes() -> HashSet<String> {
         "user-read-currently-playing",
     ];
     return HashSet::from(scopes.map(|s| s.to_owned()));
-}
-
-#[post("/search", data = "<query>")]
-async fn search(state: &State<Arc<SpotifyConfig>>, query: String) -> Option<Json<SearchResult>> {
-    let search = state
-        .client
-        .search(
-            &query,
-            &rspotify::model::SearchType::Track,
-            None,
-            None,
-            Some(5),
-            None,
-        )
-        .await;
-    if let Err(err) = search {
-        println!("SEARCH ERROR: {}", err);
-        return None;
-    }
-    let real_search = search.unwrap();
-
-    return if let rspotify::model::SearchResult::Tracks(tracks) = real_search {
-        let items = tracks.items;
-        let final_result: SearchResult = SearchResult::from(items);
-        Some(Json(final_result))
-    } else {
-        panic!("track search somehow returned non-track results")
-    };
-}
-
-#[post("/play/<track_id>")]
-async fn play_track(state: &State<Arc<SpotifyConfig>>, track_id: String) {
-    let id = TrackId::from_id(&track_id).unwrap();
-    state.client.add_item_to_queue(&id, None).await.unwrap();
-    state.client.next_track(None).await.unwrap();
-}
-
-#[post("/queue/<track_id>")]
-async fn add_track_to_queue(
-    state: &State<Arc<SpotifyConfig>>,
-    player_cmds: &State<PlayerCommandBuffer>,
-    track_id: String,
-) -> Result<(), BadRequest<()>> {
-    let id = TrackId::from_id(&track_id);
-    match id {
-        Err(_) => Err(BadRequest(None)),
-        Ok(unwrapped_id) => {
-            let track_result = state.client.track(&unwrapped_id).await;
-            if let Err(err) = track_result {
-                println!("failed to add track: {}", err);
-                return Err(BadRequest(None));
-            }
-            let full_track = track_result.unwrap();
-            state.data_store.add_track(full_track.into()).await;
-
-            let cmd_res = player_cmds.tx.try_send(NonEmptyQueueCommand {});
-            if let Err(err) = cmd_res {
-                match err {
-                    mpsc::error::TrySendError::Full(_) => {}
-                    mpsc::error::TrySendError::Closed(_) => {
-                        panic!("failed to notify player because queue is dropped");
-                    }
-                }
-            } else {
-                println!("succesfully notified player thread");
-            }
-
-            Ok(())
-        }
-    }
-}
-
-#[get("/queue")]
-async fn get_queued_tracks(state: &State<Arc<SpotifyConfig>>) -> Json<Vec<TrackInfo>> {
-    let data = state.data_store.get_all_tracks().await;
-    return Json(data);
 }
