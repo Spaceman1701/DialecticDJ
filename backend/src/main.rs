@@ -74,9 +74,7 @@ async fn initalize_spotify() -> Option<AuthCodeSpotify> {
         println!("No credentials found in the enviornment, crashing!");
         return None;
     }
-    let scopes = HashSet::from(["user-modify-playback-state".to_owned()]);
-
-    let oauth_info = OAuth::from_env(scopes).unwrap();
+    let oauth_info = OAuth::from_env(scopes()).unwrap();
     let mut client = AuthCodeSpotify::new(creds.unwrap(), oauth_info);
     let authorize_url = client.get_authorize_url(true).unwrap();
     println!("authorize url: {}", authorize_url);
@@ -88,6 +86,15 @@ async fn initalize_spotify() -> Option<AuthCodeSpotify> {
     client.request_token(&response_code).await.unwrap();
 
     return Some(client);
+}
+
+fn scopes() -> HashSet<String> {
+    let scopes = [
+        "user-modify-playback-state",
+        "user-read-playback-state",
+        "user-read-currently-playing",
+    ];
+    return HashSet::from(scopes.map(|s| s.to_owned()));
 }
 
 #[post("/search", data = "<query>")]
