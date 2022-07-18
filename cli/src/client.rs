@@ -32,4 +32,14 @@ impl DialecticDjClient {
 
         return Ok(json);
     }
+
+    pub fn play_track(&self, track: &str) -> Result<()>{
+        let res = self.client.post(format!("http://{}/play/{}", self.address, track)).send()?;
+        return Ok(());
+    }
+
+    pub fn add_track_to_queue(&self, track: &str) -> Result<()> {
+        let res = self.client.post(format!("http://{}/queue/{}", self.address, track)).send()?;
+        return Ok(());
+    }
 }

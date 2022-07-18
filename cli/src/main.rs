@@ -18,6 +18,18 @@ enum Subcommands {
         /// Spotify search query
         query: String,
     },
+
+    Play {
+        #[clap(short, long, value_parser)]
+        /// track id to play
+        track: String,
+    },
+
+    Add {
+        #[clap(short, long, value_parser)]
+        /// add a track to the DJ queue
+        track: String,
+    },
 }
 
 fn main() {
@@ -36,11 +48,17 @@ fn main() {
             match unwrapped.tracks.first() {
                 Some(track) => {
                     let name = &track.name;
-                    let author = track.album.artists.first().map(|artist| &artist.name[..]).unwrap_or("unknown");
+                    let author = track
+                        .album
+                        .artists
+                        .first()
+                        .map(|artist| &artist.name[..])
+                        .unwrap_or("unknown");
                     let duration = &track.duration.as_secs();
 
                     println!("--- Top Result ---");
                     println!("Name:     {}", name);
+                    println!("Id:       {}", &track.id.0);
                     println!("By:       {}", author);
                     println!("Duration: {} seconds", duration);
                     println!("Link:     {}", track.external_urls.get("spotify").unwrap())
@@ -50,7 +68,12 @@ fn main() {
                     println!("no track found");
                 }
             }
-
+        }
+        Subcommands::Play { track } => {
+            client.play_track(&track).unwrap();
+        }
+        Subcommands::Add { track } => {
+            client.add_track_to_queue(&track).unwrap();
         }
     }
 }
