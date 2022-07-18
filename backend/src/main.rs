@@ -11,6 +11,7 @@ use rspotify::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::{self, Sender};
 
 mod client;
@@ -22,22 +23,29 @@ extern crate rocket;
 #[launch]
 async fn rocket() -> _ {
     let client = initalize_spotify().await.unwrap();
-    let spotify_config = SpotifyConfig {
+    let spotify_config = Arc::new(SpotifyConfig {
         client,
         data_store: DataStore::new(),
-    };
+    });
 
-    let (tx, mut rx) = mpsc::channel::<NonEmptyQueueCommand>(1);
+    let (tx, mut rx) = mpsc::channel::<NonEmptyQueueCommand>(2);
 
-    // let background_state = spotify_config.clone();
-    // tokio::task::spawn(async move {
-    //     loop {
-    //         rx.recv().await;
-    //         let first = background_state.data_store.pop_first_track().await.unwrap();
-    //         println!("playing {}", first.name);
-    //         tokio::time::sleep(first.duration);
-    //     }
-    // });
+    let background_state = spotify_config.clone();
+    tokio::task::spawn(async move {
+        loop {
+            rx.recv().await;
+            let first = background_state.data_store.pop_first_track().await.unwrap();
+            println!("playing {}", first.name);
+
+            background_state
+                .client
+                .add_item_to_queue(&first.id, None)
+                .await
+                .unwrap();
+
+            tokio::time::sleep(first.duration - Duration::from_secs(10)).await;
+        }
+    });
 
     rocket::build()
         .mount(
@@ -83,7 +91,7 @@ async fn initalize_spotify() -> Option<AuthCodeSpotify> {
 }
 
 #[post("/search", data = "<query>")]
-async fn search(state: &State<SpotifyConfig>, query: String) -> Option<Json<SearchResult>> {
+async fn search(state: &State<Arc<SpotifyConfig>>, query: String) -> Option<Json<SearchResult>> {
     let search = state
         .client
         .search(
@@ -111,7 +119,7 @@ async fn search(state: &State<SpotifyConfig>, query: String) -> Option<Json<Sear
 }
 
 #[post("/play/<track_id>")]
-async fn play_track(state: &State<SpotifyConfig>, track_id: String) {
+async fn play_track(state: &State<Arc<SpotifyConfig>>, track_id: String) {
     let id = TrackId::from_id(&track_id).unwrap();
     state.client.add_item_to_queue(&id, None).await.unwrap();
     state.client.next_track(None).await.unwrap();
@@ -119,7 +127,8 @@ async fn play_track(state: &State<SpotifyConfig>, track_id: String) {
 
 #[post("/queue/<track_id>")]
 async fn add_track_to_queue(
-    state: &State<SpotifyConfig>,
+    state: &State<Arc<SpotifyConfig>>,
+    player_cmds: &State<PlayerCommandBuffer>,
     track_id: String,
 ) -> Result<(), BadRequest<()>> {
     let id = TrackId::from_id(&track_id);
@@ -128,12 +137,23 @@ async fn add_track_to_queue(
         Ok(unwrapped_id) => {
             let track_result = state.client.track(&unwrapped_id).await;
             if let Err(err) = track_result {
+                println!("failed to add track: {}", err);
                 return Err(BadRequest(None));
             }
             let full_track = track_result.unwrap();
             state.data_store.add_track(full_track.into()).await;
 
-            tokio::task::spawn(async {});
+            let cmd_res = player_cmds.tx.try_send(NonEmptyQueueCommand {});
+            if let Err(err) = cmd_res {
+                match err {
+                    mpsc::error::TrySendError::Full(_) => {}
+                    mpsc::error::TrySendError::Closed(_) => {
+                        panic!("failed to notify player because queue is dropped");
+                    }
+                }
+            } else {
+                println!("succesfully notified player thread");
+            }
 
             Ok(())
         }
@@ -141,7 +161,7 @@ async fn add_track_to_queue(
 }
 
 #[get("/queue")]
-async fn get_queued_tracks(state: &State<SpotifyConfig>) -> Json<Vec<TrackInfo>> {
+async fn get_queued_tracks(state: &State<Arc<SpotifyConfig>>) -> Json<Vec<TrackInfo>> {
     let data = state.data_store.get_all_tracks().await;
     return Json(data);
 }
