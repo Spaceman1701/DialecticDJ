@@ -23,7 +23,7 @@ pub mod DialecticDj {
     impl From<Vec<FullTrack>> for SearchResult {
         fn from(tracks: Vec<FullTrack>) -> Self {
             let mut result = SearchResult {
-                tracks: Vec::with_capacity(tracks.len())
+                tracks: Vec::with_capacity(tracks.len()),
             };
 
             for t in &tracks {
@@ -114,5 +114,6 @@ pub mod DialecticDj {
     pub struct Session {
         id: Uuid,
         tracks: Vec<Track>,
+        currently_playing: Option<Track>,
     }
 }
