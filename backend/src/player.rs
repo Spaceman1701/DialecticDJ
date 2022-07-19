@@ -4,33 +4,44 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use rspotify::{
     clients::{BaseClient, OAuthClient},
-    model::{AdditionalType, PlayableItem, TrackId},
+    model::{AdditionalType, Device, PlayableItem, TrackId},
     AuthCodeSpotify,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 
 use crate::persistence::TrackInfo;
 
 pub type PlayerCommandQueue = Sender<PlayerCommand>;
 
 pub struct PlayerCommader {
-    sender: Sender<PlayerCommand>,
+    sender: PlayerCommandQueue,
 }
 
 impl PlayerCommader {
+    fn new(sender: PlayerCommandQueue) -> PlayerCommader {
+        return PlayerCommader { sender: sender };
+    }
+
     pub async fn request_currently_playing_track(&self) -> Result<Option<TrackInfo>> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
         self.sender.send(PlayerCommand::GetCurrentTrack(tx)).await?;
 
-        return Ok(rx.recv().await.flatten());
+        return Ok(rx.await.unwrap());
     }
 
     pub async fn add_track_to_queue(&self, track_id: TrackId) -> Result<()> {
         self.sender.send(PlayerCommand::AddTrack(track_id)).await?;
         Ok(())
+    }
+
+    pub async fn get_queued_tracks(&self) -> Result<Vec<TrackInfo>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.sender.send(PlayerCommand::GetTrackQueue(tx)).await?;
+        Ok(rx.await.unwrap())
     }
 }
 
@@ -40,6 +51,7 @@ struct PlayerState {
     currently_playing: Option<InProgressTrack>,
     cmd_rx: Receiver<PlayerCommand>,
     cmd_tx: PlayerCommandQueue,
+    target_device: Option<Device>,
 }
 
 #[derive(Debug)]
@@ -50,8 +62,11 @@ pub enum PlayerCommand {
     ///Add a track suggestion to the queue
     AddTrack(TrackId),
 
-    //Return the currently playing track using the sender
-    GetCurrentTrack(Sender<Option<TrackInfo>>),
+    ///Return the currently playing track using the sender
+    GetCurrentTrack(oneshot::Sender<Option<TrackInfo>>),
+
+    ///Return the queue of tracks
+    GetTrackQueue(oneshot::Sender<Vec<TrackInfo>>),
 }
 
 impl PlayerState {
@@ -64,9 +79,30 @@ impl PlayerState {
                 currently_playing: None,
                 cmd_rx: rx,
                 cmd_tx: tx.clone(),
+                target_device: None,
             },
             tx,
         )
+    }
+
+    async fn find_target_device(&mut self) -> Result<()> {
+        let playback = self
+            .spotify
+            .current_playback(
+                None,
+                Some([&AdditionalType::Track, &AdditionalType::Episode]),
+            )
+            .await?;
+
+        match playback {
+            Some(player) => {
+                let device = player.device;
+                self.target_device = Some(device);
+
+                Ok(())
+            }
+            None => Err(Error::msg("no playback device available")),
+        }
     }
 
     async fn advance_to_next_track(&mut self) -> Result<()> {
@@ -114,15 +150,28 @@ impl PlayerState {
 
         Ok(())
     }
+
+    fn get_queued_tracks(&self) -> Vec<TrackInfo> {
+        return self.queue.iter().map(|info| info.clone()).collect();
+    }
 }
 
-pub fn start_player_thread(spotify: Arc<AuthCodeSpotify>) -> PlayerCommandQueue {
+pub fn start_player_thread(spotify: Arc<AuthCodeSpotify>) -> PlayerCommader {
     let (player, tx) = PlayerState::new(spotify);
     tokio::task::spawn(player_task(player));
-    tx
+    PlayerCommader::new(tx)
 }
 
 async fn player_task(mut player: PlayerState) {
+    if let Err(err) = player.find_target_device().await {
+        println!("ERROR: failed to start player task: {}", err);
+        return;
+    } else {
+        println!(
+            "connected to player device: {}",
+            player.target_device.as_ref().unwrap().id.as_ref().unwrap()
+        );
+    }
     loop {
         let cmd = player.cmd_rx.recv().await.unwrap(); //it's pretty bad if the channel has been droppped
         match cmd {
@@ -139,7 +188,13 @@ async fn player_task(mut player: PlayerState) {
                 }
             }
 
-            PlayerCommand::GetCurrentTrack(response_channel) => {}
+            PlayerCommand::GetCurrentTrack(response_channel) => {
+                todo!()
+            }
+            PlayerCommand::GetTrackQueue(response_channel) => {
+                let outvec = player.get_queued_tracks();
+                response_channel.send(outvec).unwrap();
+            }
         }
     }
 }

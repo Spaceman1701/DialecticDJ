@@ -27,7 +27,7 @@ async fn rocket() -> _ {
 
     start_player_thread(&spotify_config, rx);
 
-    let player_cmd_tx = player::start_player_thread(spotify);
+    let player_cmd = player::start_player_thread(spotify);
 
     rocket::build()
         .mount(
@@ -40,7 +40,7 @@ async fn rocket() -> _ {
             ],
         )
         .manage(spotify_config)
-        .manage(player_cmd_tx)
+        .manage(player_cmd)
 }
 
 fn start_player_thread(state: &Arc<DjState>, command_reciever: Receiver<NonEmptyQueueCommand>) {

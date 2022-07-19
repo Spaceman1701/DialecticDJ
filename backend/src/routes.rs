@@ -6,13 +6,8 @@ use rspotify::{
     clients::{BaseClient, OAuthClient},
     model::{Id, TrackId},
 };
-use tokio::sync::mpsc::{self, Sender};
 
-use crate::{
-    persistence::TrackInfo,
-    player::{PlayerCommand, PlayerCommandQueue},
-    DjState, NonEmptyQueueCommand, PlayerCommandBuffer,
-};
+use crate::{persistence::TrackInfo, player::PlayerCommader, DjState};
 
 #[post("/search", data = "<query>")]
 pub async fn search(state: &State<Arc<DjState>>, query: String) -> Option<Json<SearchResult>> {
@@ -51,24 +46,21 @@ pub async fn play_track(state: &State<Arc<DjState>>, track_id: String) {
 
 #[post("/queue/<track_id>")]
 pub async fn add_track_to_queue(
-    player_cmds: &State<PlayerCommandQueue>,
+    player_cmd: &State<PlayerCommader>,
     track_id: String,
 ) -> Result<(), BadRequest<()>> {
     let id = TrackId::from_id(&track_id);
     match id {
         Err(_) => Err(BadRequest(None)),
         Ok(unwrapped_id) => {
-            player_cmds
-                .send(PlayerCommand::AddTrack(unwrapped_id))
-                .await
-                .unwrap();
+            player_cmd.add_track_to_queue(unwrapped_id).await.unwrap();
             Ok(())
         }
     }
 }
 
 #[get("/queue")]
-pub async fn get_queued_tracks(state: &State<Arc<DjState>>) -> Json<Vec<TrackInfo>> {
-    let data = state.data_store.get_all_tracks().await;
+pub async fn get_queued_tracks(state: &State<PlayerCommader>) -> Json<Vec<TrackInfo>> {
+    let data = state.get_queued_tracks().await.unwrap();
     return Json(data);
 }
