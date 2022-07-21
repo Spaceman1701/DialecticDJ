@@ -116,6 +116,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "core",
+ "ddj_core",
  "rocket",
  "rspotify",
  "serde",
@@ -351,6 +352,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ddj_core"
+version = "0.1.0"
+dependencies = [
+ "rspotify",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "devise"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -479,7 +489,10 @@ dependencies = [
 name = "frontend"
 version = "0.1.0"
 dependencies = [
+ "ddj_core",
  "seed",
+ "serde",
+ "serde_json",
  "wasm-bindgen-test",
 ]
 

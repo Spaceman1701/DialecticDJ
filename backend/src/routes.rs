@@ -1,6 +1,7 @@
 use core::DialecticDj::SearchResult;
 use std::sync::Arc;
 
+use ddj_core::types::{PlayerState, Track};
 use rocket::{response::status::BadRequest, serde::json::Json, State};
 use rspotify::{
     clients::{BaseClient, OAuthClient},
@@ -63,4 +64,20 @@ pub async fn add_track_to_queue(
 pub async fn get_queued_tracks(state: &State<PlayerCommader>) -> Json<Vec<TrackInfo>> {
     let data = state.get_queued_tracks().await.unwrap();
     return Json(data);
+}
+
+#[get("/current_state")]
+pub async fn get_current_state(
+    player: &State<PlayerCommader>,
+) -> Json<ddj_core::types::PlayerState> {
+    let current_track = player.get_currently_playing_track().await.unwrap();
+    let unwrapped: Option<Track> = current_track.map(|track: TrackInfo| (&track).into());
+
+    let queue = player.get_queued_tracks().await.unwrap();
+    let transformed_queue: Vec<Track> = queue.iter().map(|info| info.into()).collect();
+    println!("found {} in queue", transformed_queue.len());
+    return Json(PlayerState {
+        current_track: unwrapped,
+        queue: transformed_queue,
+    });
 }

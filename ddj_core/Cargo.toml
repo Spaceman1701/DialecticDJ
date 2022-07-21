@@ -1,18 +1,15 @@
 [package]
-name = "backend"
+name = "ddj_core"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rocket = { version = "0.5.0-rc.2", features = ["json"] }
-rspotify = "0.11.5"
-core = { path = "../core" }
-ddj_core = { path = "../ddj_core" }
-thiserror = "1"
-anyhow = "1"
-tokio = {}
-tokio-postgres = "0.7"
+rspotify = { version = "0.11", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+default = ["rspotify"]
+rspotify = ["dep:rspotify"]

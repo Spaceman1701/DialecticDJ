@@ -26,7 +26,7 @@ impl PlayerCommader {
         return PlayerCommader { sender: sender };
     }
 
-    pub async fn request_currently_playing_track(&self) -> Result<Option<TrackInfo>> {
+    pub async fn get_currently_playing_track(&self) -> Result<Option<TrackInfo>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.sender.send(PlayerCommand::GetCurrentTrack(tx)).await?;
 
@@ -189,7 +189,11 @@ async fn player_task(mut player: PlayerState) {
             }
 
             PlayerCommand::GetCurrentTrack(response_channel) => {
-                todo!()
+                let track = player
+                    .currently_playing
+                    .as_ref()
+                    .map(|playing| playing.track.clone());
+                response_channel.send(track).unwrap();
             }
             PlayerCommand::GetTrackQueue(response_channel) => {
                 let outvec = player.get_queued_tracks();

@@ -1,3 +1,4 @@
+pub mod types;
 pub mod DialecticDj {
     use std::{collections::HashMap, time::Duration};
 

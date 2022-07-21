@@ -1,4 +1,4 @@
 [workspace]
 
-members = ["backend", "cli", "core", "frontend"]
+members = ["backend", "cli", "core", "frontend", "ddj_core"]
 edition = "2021"

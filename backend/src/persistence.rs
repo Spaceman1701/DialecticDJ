@@ -1,7 +1,11 @@
+use ddj_core::types::Track;
 use std::{collections::VecDeque, time::Duration};
 
-use rocket::{tokio::sync::RwLock, serde::{Serialize, Deserialize}};
-use rspotify::model::{TrackId, FullTrack};
+use rocket::{
+    serde::{Deserialize, Serialize},
+    tokio::sync::RwLock,
+};
+use rspotify::model::{FullAlbum, FullTrack, SimplifiedAlbum, TrackId};
 
 pub struct DataStore {
     inner: RwLock<InnerDataStore>,
@@ -56,10 +60,28 @@ pub struct TrackInfo {
     pub id: TrackId,
     pub name: String,
     pub duration: Duration,
+    pub album: SimplifiedAlbum,
 }
 
 impl From<FullTrack> for TrackInfo {
     fn from(track: FullTrack) -> Self {
-       return TrackInfo { id: track.id.unwrap(), name: track.name, duration: track.duration };
+        return TrackInfo {
+            id: track.id.unwrap(),
+            name: track.name,
+            duration: track.duration,
+            album: track.album,
+        };
+    }
+}
+
+impl Into<Track> for &TrackInfo {
+    fn into(self) -> Track {
+        Track {
+            name: self.name.clone(),
+            id: self.id.to_string(),
+            artists: Vec::new(),
+            duration: self.duration,
+            album_art_link: self.album.images.first().map(|image| image.url.clone()),
+        }
     }
 }

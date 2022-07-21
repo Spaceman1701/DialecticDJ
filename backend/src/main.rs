@@ -1,12 +1,11 @@
 use persistence::DataStore;
 
+use rocket::fairing::AdHoc;
+use rocket::http::Header;
 use rspotify::{clients::OAuthClient, AuthCodeSpotify, Credentials, OAuth};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::{self, Receiver, Sender};
 
-mod client;
 mod persistence;
 mod player;
 mod routes;
@@ -23,10 +22,6 @@ async fn rocket() -> _ {
         data_store: DataStore::new(),
     });
 
-    let (tx, rx) = mpsc::channel::<NonEmptyQueueCommand>(2);
-
-    start_player_thread(&spotify_config, rx);
-
     let player_cmd = player::start_player_thread(spotify);
 
     rocket::build()
@@ -36,35 +31,24 @@ async fn rocket() -> _ {
                 routes::search,
                 routes::play_track,
                 routes::add_track_to_queue,
-                routes::get_queued_tracks
+                routes::get_queued_tracks,
+                routes::get_current_state
             ],
         )
         .manage(spotify_config)
         .manage(player_cmd)
+        .attach(AdHoc::on_response("CORS Headers", |req, response| {
+            Box::pin(async move {
+                response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
+                response.set_header(Header::new(
+                    "Access-Control-Allow-Methods",
+                    "POST, GET, PATCH, OPTIONS",
+                ));
+                response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
+                response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
+            })
+        }))
 }
-
-fn start_player_thread(state: &Arc<DjState>, command_reciever: Receiver<NonEmptyQueueCommand>) {
-    let cloned_state = state.clone();
-    let mut rx = command_reciever;
-
-    tokio::task::spawn(async move {
-        loop {
-            rx.recv().await;
-            let first = cloned_state.data_store.pop_first_track().await.unwrap();
-            println!("playing {}", first.name);
-
-            cloned_state
-                .client
-                .add_item_to_queue(&first.id, None)
-                .await
-                .unwrap();
-
-            tokio::time::sleep(first.duration - Duration::from_secs(10)).await;
-        }
-    });
-}
-
-pub struct NonEmptyQueueCommand;
 
 pub struct DjState {
     client: Arc<AuthCodeSpotify>, //BaseClient requires "Clone" which means it can't be used as a dyn trait object :/
