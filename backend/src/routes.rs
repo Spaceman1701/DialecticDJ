@@ -1,17 +1,28 @@
-use core::DialecticDj::SearchResult;
 use std::sync::Arc;
 
 use ddj_core::types::{PlayerState, Track};
-use rocket::{response::status::BadRequest, serde::json::Json, State};
+use rocket::{
+    futures::lock::Mutex,
+    http::{Header, Status},
+    response::{self, status::BadRequest},
+    serde::json::Json,
+    Response, State,
+};
 use rspotify::{
     clients::{BaseClient, OAuthClient},
     model::{Id, TrackId},
+    AuthCodeSpotify, Credentials, OAuth,
 };
 
-use crate::{persistence::TrackInfo, player::PlayerCommader, DjState};
+use crate::{
+    authentication::{self, AuthenticationState},
+    persistence::TrackInfo,
+    player::PlayerCommader,
+    DjState,
+};
 
 #[post("/search", data = "<query>")]
-pub async fn search(state: &State<Arc<DjState>>, query: String) -> Option<Json<SearchResult>> {
+pub async fn search(state: &State<Arc<DjState>>, query: String) -> Option<Json<Vec<Track>>> {
     let search = state
         .client
         .search(
@@ -31,18 +42,16 @@ pub async fn search(state: &State<Arc<DjState>>, query: String) -> Option<Json<S
 
     return if let rspotify::model::SearchResult::Tracks(tracks) = real_search {
         let items = tracks.items;
-        let final_result: SearchResult = SearchResult::from(items);
+        let final_result: Vec<Track> = items.iter().map(|ft| ft.into()).collect();
         Some(Json(final_result))
     } else {
         panic!("track search somehow returned non-track results")
     };
 }
 
-#[post("/play/<track_id>")]
-pub async fn play_track(state: &State<Arc<DjState>>, track_id: String) {
-    let id = TrackId::from_id(&track_id).unwrap();
-    state.client.add_item_to_queue(&id, None).await.unwrap();
-    state.client.next_track(None).await.unwrap();
+#[post("/play")]
+pub async fn play_track(state: &State<PlayerCommader>) {
+    state.start().await.unwrap();
 }
 
 #[post("/queue/<track_id>")]
@@ -80,4 +89,42 @@ pub async fn get_current_state(
         current_track: unwrapped,
         queue: transformed_queue,
     });
+}
+
+#[options("/<_..>")]
+pub async fn handle_options<'a>() -> () {
+    ()
+}
+
+#[post("/start_auth_flow")]
+pub async fn start_auth_flow() -> (Status, Option<String>) {
+    let creds = Credentials::from_env();
+    if creds.is_none() {
+        println!("No credentials found in the enviornment, crashing!");
+        return (Status::InternalServerError, None);
+    }
+    let mut oauth_info = OAuth::from_env(authentication::scopes()).unwrap();
+    oauth_info.redirect_uri = "http://192.168.0.22:8080/login".to_owned();
+
+    let mut client = AuthCodeSpotify::new(creds.unwrap(), oauth_info);
+    let authorize_url = client.get_authorize_url(true).unwrap();
+
+    (Status::Ok, Some(authorize_url))
+}
+
+#[post("/finish_auth_flow/<code>")]
+pub async fn finish_auth_flow(code: String, auth: &State<Mutex<Option<AuthenticationState>>>) {
+    let creds = Credentials::from_env();
+    if creds.is_none() {
+        panic!("No credentials found in the enviornment, crashing!");
+    }
+    let mut oauth_info = OAuth::from_env(authentication::scopes()).unwrap();
+    oauth_info.redirect_uri = "http://192.168.0.22:8080/login".to_owned();
+    let mut client = AuthCodeSpotify::new(creds.unwrap(), oauth_info);
+
+    client.request_token(&code).await.unwrap();
+
+    let auth_state = AuthenticationState::new(client).await;
+    *auth.lock().await = Some(auth_state);
+    println!("successfully authenticated client")
 }

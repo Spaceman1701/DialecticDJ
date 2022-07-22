@@ -1,11 +1,17 @@
+use authentication::AuthenticationState;
 use persistence::DataStore;
 
 use rocket::fairing::AdHoc;
+use rocket::futures::lock::Mutex;
 use rocket::http::Header;
+use rocket::Rocket;
+use rspotify::clients::BaseClient;
 use rspotify::{clients::OAuthClient, AuthCodeSpotify, Credentials, OAuth};
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+mod authentication;
 mod persistence;
 mod player;
 mod routes;
@@ -24,6 +30,13 @@ async fn rocket() -> _ {
 
     let player_cmd = player::start_player_thread(spotify);
 
+    let config = rocket::Config {
+        address: std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 0, 22)),
+        ..Default::default()
+    };
+
+    let auth: Mutex<Option<AuthenticationState>> = Mutex::default();
+
     rocket::build()
         .mount(
             "/",
@@ -32,12 +45,17 @@ async fn rocket() -> _ {
                 routes::play_track,
                 routes::add_track_to_queue,
                 routes::get_queued_tracks,
-                routes::get_current_state
+                routes::get_current_state,
+                routes::handle_options,
+                routes::start_auth_flow,
+                routes::finish_auth_flow,
             ],
         )
         .manage(spotify_config)
         .manage(player_cmd)
-        .attach(AdHoc::on_response("CORS Headers", |req, response| {
+        .manage(auth)
+        .configure(config)
+        .attach(AdHoc::on_response("CORS Headers", |_, response| {
             Box::pin(async move {
                 response.set_header(Header::new("Access-Control-Allow-Origin", "*"));
                 response.set_header(Header::new(
@@ -72,6 +90,7 @@ async fn initalize_spotify() -> Option<AuthCodeSpotify> {
     std::io::stdin().read_line(&mut code).unwrap();
     let response_code = client.parse_response_code(&code).unwrap();
     client.request_token(&response_code).await.unwrap();
+    // client.get_token()
 
     return Some(client);
 }

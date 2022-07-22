@@ -19,11 +19,7 @@ enum Subcommands {
         query: String,
     },
 
-    Play {
-        #[clap(short, long, value_parser)]
-        /// track id to play
-        track: String,
-    },
+    Play,
 
     Add {
         #[clap(short, long, value_parser)]
@@ -35,7 +31,7 @@ enum Subcommands {
 fn main() {
     let args = TopLevel::parse();
 
-    let client = DialecticDjClient::new("127.0.0.1:8000");
+    let client = DialecticDjClient::new("192.168.0.22:8080");
 
     match args.command {
         Subcommands::Search { query } => {
@@ -69,8 +65,8 @@ fn main() {
                 }
             }
         }
-        Subcommands::Play { track } => {
-            client.play_track(&track).unwrap();
+        Subcommands::Play => {
+            client.play_track().unwrap();
         }
         Subcommands::Add { track } => {
             client.add_track_to_queue(&track).unwrap();

@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    process::id,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -7,7 +8,7 @@ use std::{
 use anyhow::{Error, Result};
 use rspotify::{
     clients::{BaseClient, OAuthClient},
-    model::{AdditionalType, Device, PlayableItem, TrackId},
+    model::{AdditionalType, CurrentPlaybackContext, Device, PlayableItem, TrackId},
     AuthCodeSpotify,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -43,6 +44,11 @@ impl PlayerCommader {
         self.sender.send(PlayerCommand::GetTrackQueue(tx)).await?;
         Ok(rx.await.unwrap())
     }
+
+    pub async fn start(&self) -> Result<()> {
+        self.sender.send(PlayerCommand::Start).await?;
+        Ok(())
+    }
 }
 
 struct PlayerState {
@@ -56,6 +62,9 @@ struct PlayerState {
 
 #[derive(Debug)]
 pub enum PlayerCommand {
+    ///Start the player from pause
+    Start,
+
     ///Wake and configure the next track. Sent on a timer
     Wake,
 
@@ -119,16 +128,30 @@ impl PlayerState {
         }
         let playerstate = playstate_response.unwrap();
 
-        if item_duration_almost_done(&playerstate.item, &playerstate.progress) {
-            let front = self.queue.pop_front();
-            if let Some(track_info) = front {
-                self.setup_next_track(track_info, &playerstate.device.id.unwrap())
-                    .await;
-            } else {
-                println!("no track to play");
-            }
+        let front = self.queue.pop_front();
+        if let Some(track_info) = front {
+            self.setup_next_track(track_info, self.device_id()).await;
+        } else {
+            println!("no track to play");
         }
+
         Ok(())
+    }
+
+    fn device_id(&self) -> &str {
+        self.target_device.as_ref().unwrap().id.as_ref().unwrap()
+    }
+
+    async fn start(&mut self) {
+        if let Some(track) = self.queue.pop_front() {
+            self.currently_playing = Some(InProgressTrack {
+                track: track.clone(),
+                start_instant: Instant::now(),
+            });
+            let device_id = self.device_id();
+            self.setup_next_track(track, device_id).await;
+            self.spotify.next_track(Some(device_id)).await.unwrap();
+        }
     }
 
     async fn setup_next_track(&self, track: TrackInfo, device_id: &str) {
@@ -139,6 +162,10 @@ impl PlayerState {
 
         let tx_clone = self.cmd_tx.clone();
         tokio::task::spawn(async move {
+            println!(
+                "waking player thread in {} seconds",
+                (track.duration - Duration::from_secs(10)).as_secs()
+            );
             tokio::time::sleep(track.duration - Duration::from_secs(10)).await;
             tx_clone.send(PlayerCommand::Wake).await.unwrap();
         });
@@ -149,6 +176,28 @@ impl PlayerState {
         self.queue.push_back(full_track.into());
 
         Ok(())
+    }
+
+    async fn get_currently_playing(&self) -> Result<Option<TrackInfo>> {
+        let playstate_response: Option<CurrentPlaybackContext> = self
+            .spotify
+            .current_playback(
+                None,
+                Some([&AdditionalType::Track, &AdditionalType::Episode]),
+            )
+            .await?;
+
+        Ok(playstate_response
+            .map(|playersate| {
+                playersate
+                    .item
+                    .map(|item| match item {
+                        PlayableItem::Track(full_track) => Some(TrackInfo::from(full_track)),
+                        PlayableItem::Episode(_) => None,
+                    })
+                    .flatten()
+            })
+            .flatten())
     }
 
     fn get_queued_tracks(&self) -> Vec<TrackInfo> {
@@ -189,15 +238,22 @@ async fn player_task(mut player: PlayerState) {
             }
 
             PlayerCommand::GetCurrentTrack(response_channel) => {
-                let track = player
-                    .currently_playing
-                    .as_ref()
-                    .map(|playing| playing.track.clone());
-                response_channel.send(track).unwrap();
+                let current_track = player.get_currently_playing().await;
+                match current_track {
+                    Ok(res) => {
+                        response_channel.send(res).unwrap();
+                    }
+                    Err(err) => {
+                        println!("failed to find current track: {}", err);
+                    }
+                }
             }
             PlayerCommand::GetTrackQueue(response_channel) => {
                 let outvec = player.get_queued_tracks();
                 response_channel.send(outvec).unwrap();
+            }
+            PlayerCommand::Start => {
+                player.start().await;
             }
         }
     }

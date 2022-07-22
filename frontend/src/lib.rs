@@ -3,21 +3,71 @@
 // but some rules are too "annoying" or are not applicable for your case.)
 #![allow(clippy::wildcard_imports)]
 
+use std::str::FromStr;
+
 use ddj_core::types::{PlayerState, Track};
 use seed::{prelude::*, *};
+use serde::{Deserialize, Serialize};
+
+const SEARCH: &str = "search";
+const DEVICE_SELECTION: &str = "device_selection";
+const LOGIN: &str = "login";
 
 // ------ ------
 //     Init
 // ------ ------
 
 // `init` describes what should happen when your app started.
-fn init(_: Url, orders: &mut impl Orders<Msg>) -> Model {
-    orders.perform_cmd(async { Msg::NewStateAvailable(request_new_state().await) });
+fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
+    orders.stream(streams::interval(1000, || Msg::UpdateState));
+
+    let page = match url.hash_path().get(0) {
+        Some(path) => {
+            if path == LOGIN {
+                match url.search().get("code") {
+                    Some(values) => {
+                        let first = values.first();
+                        match first {
+                            Some(code) => {
+                                let cloned = code.clone();
+                                orders.perform_cmd(async move {
+                                    send_code(&cloned).await;
+                                });
+                            }
+                            None => {}
+                        };
+
+                        Page::Login(None)
+                    }
+                    None => {
+                        orders.perform_cmd(async {
+                            Msg::AuthUrlAvailable(request_login_url().await)
+                        });
+
+                        Page::Login(None)
+                    }
+                }
+            } else {
+                update_state(orders);
+                Page::Landing
+            }
+        }
+        None => {
+            update_state(orders);
+            Page::Landing
+        }
+    };
 
     Model {
+        page: page,
         loaded: LoadingState::Loading,
         currently_playing: None,
         queue: Vec::new(),
+        search_model: SearchModel {
+            results: Vec::new(),
+            in_progress: false,
+            error: None,
+        },
     }
 }
 
@@ -32,10 +82,32 @@ enum LoadingState {
     Error(String),
     Loading,
 }
+
+#[derive(PartialEq, Eq)]
+enum Page {
+    Landing,
+    Search(bool),
+    DeviceSelection,
+    Login(Option<String>),
+}
+
+#[derive(PartialEq, Eq)]
+enum Mode {
+    Search(bool),
+    Normal,
+}
 struct Model {
+    page: Page,
     loaded: LoadingState,
     currently_playing: Option<Track>,
     queue: Vec<Track>,
+    search_model: SearchModel,
+}
+
+struct SearchModel {
+    results: Vec<Track>,
+    in_progress: bool,
+    error: Option<String>,
 }
 
 // ------ ------
@@ -46,16 +118,16 @@ struct Model {
 // `Msg` describes the different events you can modify state with.
 enum Msg {
     NewStateAvailable(fetch::Result<PlayerState>),
+    EnterSearchMode,
+    SearchInputChanged(String),
+    SearchResultAvailable(fetch::Result<Vec<Track>>),
+    TrackClicked(Track),
+    UpdateState,
+    AuthUrlAvailable(fetch::Result<String>),
 }
 
 // `update` describes how to handle each `Msg`.
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
-    // if model.loaded == LoadingState::Loading {
-    //     orders.perform_cmd(async { Msg::NewStateAvailable(request_new_state().await) });
-    //     return;
-    // }
-    println!("requesting state");
-    model.loaded = LoadingState::Error("bad".to_owned());
     match msg {
         Msg::NewStateAvailable(fetch_result) => match fetch_result {
             Ok(player_state) => {
@@ -65,16 +137,101 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             }
             Err(_) => model.loaded = LoadingState::Error("player state fetch failed".to_owned()),
         },
+        Msg::EnterSearchMode => {
+            model.page = Page::Search(false);
+        }
+        Msg::SearchInputChanged(new_input) => {
+            if model.page == Page::Search(false) {
+                orders.perform_cmd(
+                    async move { Msg::SearchResultAvailable(search(&new_input).await) },
+                );
+                model.search_model.in_progress = true;
+            }
+        }
+        Msg::SearchResultAvailable(fetch_result) => match fetch_result {
+            Ok(search_result) => {
+                model.search_model.in_progress = false;
+                model.search_model.results = search_result;
+            }
+            Err(_) => {
+                model.search_model.error = Some("search query failed".to_owned());
+            }
+        },
+        Msg::TrackClicked(track) => match model.page {
+            Page::Search(_) => {
+                orders.perform_cmd(async move {
+                    add_track_to_queue(&track).await;
+                });
+                model.page = Page::Landing;
+                update_state(orders);
+            }
+            _ => {}
+        },
+        Msg::UpdateState => {
+            orders.skip();
+            match model.page {
+                Page::Landing => {
+                    // update_state(orders);
+                }
+                _ => (),
+            }
+        }
+        Msg::AuthUrlAvailable(url) => match url {
+            Ok(auth_url) => {
+                log!("got auth url");
+                model.page = Page::Login(Some(auth_url));
+            }
+            Err(err) => {
+                log!("failed to recieve redirect URL: {}",);
+            }
+        },
     }
 }
 
+fn update_state(orders: &mut impl Orders<Msg>) {
+    orders.perform_cmd(async { Msg::NewStateAvailable(request_new_state().await) });
+}
+
+const BASE_URL: &str = "http://192.168.0.22:8000";
+
 async fn request_new_state() -> fetch::Result<PlayerState> {
-    let request = Request::new("http://127.0.0.1:8000/current_state").method(Method::Get);
+    let request = Request::new(format!("{}/current_state", BASE_URL)).method(Method::Get);
 
     let response = fetch(request).await?;
     let payload = response.json().await?;
 
     Ok(payload)
+}
+
+async fn search(query: &str) -> fetch::Result<Vec<Track>> {
+    let request = Request::new(format!("{}/search", BASE_URL))
+        .method(Method::Post)
+        .json(query)?;
+
+    let response = fetch(request).await?;
+    let payload = response.json().await?;
+
+    Ok(payload)
+}
+
+async fn add_track_to_queue(track: &Track) -> fetch::Result<()> {
+    let request = Request::new(format!("{}/queue/{}", BASE_URL, &track.id)).method(Method::Post);
+    fetch(request).await?;
+
+    Ok(())
+}
+
+async fn request_login_url() -> fetch::Result<String> {
+    let request = Request::new(format!("{}/start_auth_flow", BASE_URL)).method(Method::Post);
+    let response = fetch(request).await?;
+    let payload = response.text().await?;
+    Ok(payload)
+}
+
+async fn send_code(code: &str) {
+    let request =
+        Request::new(format!("{}/finish_auth_flow/{}", BASE_URL, code)).method(Method::Post);
+    let response = fetch(request).await.unwrap();
 }
 
 // ------ ------
@@ -83,6 +240,45 @@ async fn request_new_state() -> fetch::Result<PlayerState> {
 
 // `view` describes what to display.
 fn view(model: &Model) -> Node<Msg> {
+    match &model.page {
+        Page::Landing => view_normal_mode(model),
+        Page::Search(_) => view_search_mode(model),
+        Page::DeviceSelection => todo!(),
+        Page::Login(url) => div![
+            "redirecting...",
+            match url {
+                Some(real_url) => a![attrs!(At::Href => real_url), "click here!"],
+                None => div![],
+            }
+        ],
+    }
+}
+
+fn view_search_mode(model: &Model) -> Node<Msg> {
+    div![
+        C!["content"],
+        div![C!["app-title"], "Add Something"],
+        input![
+            C!["search-input"],
+            "search",
+            input_ev(Ev::Input, move |input| Msg::SearchInputChanged(input))
+        ],
+        div![
+            C!["search-result-container"],
+            view_search_results(&model.search_model)
+        ]
+    ]
+}
+
+fn view_search_results(model: &SearchModel) -> Node<Msg> {
+    if let Some(err) = &model.error {
+        div![format!("ERROR: {}", err)]
+    } else {
+        view_queue(&model.results)
+    }
+}
+
+fn view_normal_mode(model: &Model) -> Node<Msg> {
     div![
         C!["content"],
         div![C!["app-title"], "Dialectic DJ"],
@@ -122,15 +318,20 @@ fn view_track(track: &Track) -> Node<Msg> {
     let duration_mins = track.duration.as_secs() / 60;
     let duration_secs = track.duration.as_secs() % 60;
     let duration_str = format!("{}:{}", duration_mins, duration_secs);
+    let cloned_track = track.clone();
     div![
         C!["track"],
         img!(attrs! {At::Src => album_art}),
         div![C!["track-info"], div![&track.name], div![duration_str]],
+        ev(Ev::Click, move |_| { Msg::TrackClicked(cloned_track) })
     ]
 }
 
 fn view_plus_button() -> Node<Msg> {
-    div![C!["plus-button"], div!["+"]]
+    div![
+        C!["plus-button"],
+        div!["+", ev(Ev::Click, |_| Msg::EnterSearchMode)]
+    ]
 }
 
 // ------ ------
