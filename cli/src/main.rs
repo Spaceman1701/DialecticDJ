@@ -31,39 +31,39 @@ enum Subcommands {
 fn main() {
     let args = TopLevel::parse();
 
-    let client = DialecticDjClient::new("192.168.0.22:8080");
+    let client = DialecticDjClient::new("localhost:8090");
 
     match args.command {
         Subcommands::Search { query } => {
-            let res = client.search(&query);
-            if let Err(err) = res {
-                println!("SEARCH FAILED: {}", err);
-                return;
-            }
-            let unwrapped = res.unwrap();
-            match unwrapped.tracks.first() {
-                Some(track) => {
-                    let name = &track.name;
-                    let author = track
-                        .album
-                        .artists
-                        .first()
-                        .map(|artist| &artist.name[..])
-                        .unwrap_or("unknown");
-                    let duration = &track.duration.as_secs();
+            // let res = client.search(&query);
+            // if let Err(err) = res {
+            //     println!("SEARCH FAILED: {}", err);
+            //     return;
+            // }
+            // let unwrapped = res.unwrap();
+            // match unwrapped.tracks.first() {
+            //     Some(track) => {
+            //         let name = &track.name;
+            //         let author = track
+            //             .album
+            //             .artists
+            //             .first()
+            //             .map(|artist| &artist.name[..])
+            //             .unwrap_or("unknown");
+            //         let duration = &track.duration.as_secs();
 
-                    println!("--- Top Result ---");
-                    println!("Name:     {}", name);
-                    println!("Id:       {}", &track.id.0);
-                    println!("By:       {}", author);
-                    println!("Duration: {} seconds", duration);
-                    println!("Link:     {}", track.external_urls.get("spotify").unwrap())
-                }
+            //         println!("--- Top Result ---");
+            //         println!("Name:     {}", name);
+            //         println!("Id:       {}", &track.id.0);
+            //         println!("By:       {}", author);
+            //         println!("Duration: {} seconds", duration);
+            //         println!("Link:     {}", track.external_urls.get("spotify").unwrap())
+            //     }
 
-                None => {
-                    println!("no track found");
-                }
-            }
+            //     None => {
+            //         println!("no track found");
+            //     }
+            // }
         }
         Subcommands::Play => {
             client.play_track().unwrap();

@@ -1,4 +1,3 @@
-use core::DialecticDj::SearchResult;
 use std::{
     fmt::{Display, Write},
     io::Error,
@@ -21,22 +20,22 @@ impl DialecticDjClient {
         };
     }
 
-    pub fn search(&self, query: &str) -> Result<SearchResult> {
-        let res = self
-            .client
-            .post(format!("http://{}/search", self.address))
-            .body(query.to_owned())
-            .send()?;
+    // pub fn search(&self, query: &str) -> Result<Vec<Track>> {
+    //     let res = self
+    //         .client
+    //         .post(format!("http://{}/search", self.address))
+    //         .body(query.to_owned())
+    //         .send()?;
 
-        let json = res.json()?;
+    //     let json = res.json()?;
 
-        return Ok(json);
-    }
+    //     return Ok(json);
+    // }
 
     pub fn play_track(&self) -> Result<()> {
         let res = self
             .client
-            .post(format!("http://{}/play", self.address))
+            .post(format!("http://{}/next_track", self.address))
             .send()?;
         return Ok(());
     }

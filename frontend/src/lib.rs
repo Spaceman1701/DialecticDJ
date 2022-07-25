@@ -19,25 +19,26 @@ const LOGIN: &str = "login";
 
 // `init` describes what should happen when your app started.
 fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
-    orders.stream(streams::interval(1000, || Msg::UpdateState));
+    orders.stream(streams::interval(10000, || Msg::UpdateState));
 
     let page = match url.hash_path().get(0) {
         Some(path) => {
             if path == LOGIN {
+                log!("login page init");
                 match url.search().get("code") {
                     Some(values) => {
                         let first = values.first();
+                        log!(first);
                         match first {
                             Some(code) => {
                                 let cloned = code.clone();
                                 orders.perform_cmd(async move {
                                     send_code(&cloned).await;
                                 });
+                                Page::Landing
                             }
-                            None => {}
-                        };
-
-                        Page::Login(None)
+                            None => Page::Landing,
+                        }
                     }
                     None => {
                         orders.perform_cmd(async {
@@ -48,15 +49,18 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
                     }
                 }
             } else {
-                update_state(orders);
                 Page::Landing
             }
         }
-        None => {
-            update_state(orders);
-            Page::Landing
-        }
+        None => Page::Landing,
     };
+
+    if page == Page::Landing {
+        update_state(orders);
+        Url::from_str("http://192.168.0.22:8080/")
+            .unwrap()
+            .go_and_replace();
+    }
 
     Model {
         page: page,
@@ -171,7 +175,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             orders.skip();
             match model.page {
                 Page::Landing => {
-                    // update_state(orders);
+                    update_state(orders);
                 }
                 _ => (),
             }
@@ -192,7 +196,7 @@ fn update_state(orders: &mut impl Orders<Msg>) {
     orders.perform_cmd(async { Msg::NewStateAvailable(request_new_state().await) });
 }
 
-const BASE_URL: &str = "http://192.168.0.22:8000";
+const BASE_URL: &str = "http://192.168.0.22:8090";
 
 async fn request_new_state() -> fetch::Result<PlayerState> {
     let request = Request::new(format!("{}/current_state", BASE_URL)).method(Method::Get);

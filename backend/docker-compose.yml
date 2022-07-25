@@ -1,0 +1,22 @@
+services:
+  ddj-db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "ddj"
+      POSTGRES_PASSWORD: "password"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  ddj-backend:
+      image: rust
+      environment:
+        POSTGRES_HOST: "db"
+        POSTGRES_PASSWORD: "password" #obviouslly don't use this in prod
+      volumes:
+        - ../:/ddj
+      ports:
+        - "${DDJ_IP_ADDRESS}:8090:8090"
+      command: sh -c "cd /ddj/backend && cargo run"
+volumes:
+  postgres-data:

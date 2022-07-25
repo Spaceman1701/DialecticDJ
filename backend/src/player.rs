@@ -14,7 +14,10 @@ use rspotify::{
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 
-use crate::persistence::TrackInfo;
+use crate::{
+    authentication::{AuthenticationState, ManagedAuthState, SpotifyClient},
+    model::TrackInfo,
+};
 
 pub type PlayerCommandQueue = Sender<PlayerCommand>;
 
@@ -52,7 +55,7 @@ impl PlayerCommader {
 }
 
 struct PlayerState {
-    spotify: Arc<AuthCodeSpotify>,
+    auth_state: ManagedAuthState,
     queue: VecDeque<TrackInfo>,
     currently_playing: Option<InProgressTrack>,
     cmd_rx: Receiver<PlayerCommand>,
@@ -79,11 +82,11 @@ pub enum PlayerCommand {
 }
 
 impl PlayerState {
-    fn new(spotify: Arc<AuthCodeSpotify>) -> (PlayerState, PlayerCommandQueue) {
+    fn new(auth_state: ManagedAuthState) -> (PlayerState, PlayerCommandQueue) {
         let (tx, rx) = tokio::sync::mpsc::channel(64); //TODO: consider unbounded channel here
         (
             PlayerState {
-                spotify: spotify,
+                auth_state: auth_state,
                 queue: VecDeque::new(),
                 currently_playing: None,
                 cmd_rx: rx,
@@ -94,45 +97,59 @@ impl PlayerState {
         )
     }
 
+    async fn spotify(&self) -> Option<AuthCodeSpotify> {
+        let mut auth_value = self.auth_state.lock().await;
+        if auth_value.is_none() {
+            return None;
+        } else {
+            let a = auth_value.as_mut().unwrap();
+            return Some(a.client().await);
+        }
+    }
+
     async fn find_target_device(&mut self) -> Result<()> {
-        let playback = self
-            .spotify
-            .current_playback(
-                None,
-                Some([&AdditionalType::Track, &AdditionalType::Episode]),
-            )
-            .await?;
+        if let Some(spotify) = self.spotify().await {
+            let playback = spotify
+                .current_playback(
+                    None,
+                    Some([&AdditionalType::Track, &AdditionalType::Episode]),
+                )
+                .await?;
 
-        match playback {
-            Some(player) => {
-                let device = player.device;
-                self.target_device = Some(device);
+            match playback {
+                Some(player) => {
+                    let device = player.device;
+                    self.target_device = Some(device);
 
-                Ok(())
+                    Ok(())
+                }
+                None => Err(Error::msg("no playback device available")),
             }
-            None => Err(Error::msg("no playback device available")),
+        } else {
+            Ok(())
         }
     }
 
     async fn advance_to_next_track(&mut self) -> Result<()> {
-        let playstate_response = self
-            .spotify
-            .current_playback(
-                None,
-                Some([&AdditionalType::Track, &AdditionalType::Episode]),
-            )
-            .await?;
+        if let Some(spotify) = self.spotify().await {
+            let playstate_response = spotify
+                .current_playback(
+                    None,
+                    Some([&AdditionalType::Track, &AdditionalType::Episode]),
+                )
+                .await?;
 
-        if playstate_response.is_none() {
-            return Err(anyhow::Error::msg("player state is unavailable"));
-        }
-        let playerstate = playstate_response.unwrap();
+            if playstate_response.is_none() {
+                return Err(anyhow::Error::msg("player state is unavailable"));
+            }
+            let playerstate = playstate_response.unwrap();
 
-        let front = self.queue.pop_front();
-        if let Some(track_info) = front {
-            self.setup_next_track(track_info, self.device_id()).await;
-        } else {
-            println!("no track to play");
+            let front = self.queue.pop_front();
+            if let Some(track_info) = front {
+                self.setup_next_track(track_info, self.device_id()).await;
+            } else {
+                println!("no track to play");
+            }
         }
 
         Ok(())
@@ -143,61 +160,70 @@ impl PlayerState {
     }
 
     async fn start(&mut self) {
+        self.find_target_device().await;
         if let Some(track) = self.queue.pop_front() {
-            self.currently_playing = Some(InProgressTrack {
-                track: track.clone(),
-                start_instant: Instant::now(),
-            });
-            let device_id = self.device_id();
-            self.setup_next_track(track, device_id).await;
-            self.spotify.next_track(Some(device_id)).await.unwrap();
+            if let Some(spotify) = self.spotify().await {
+                self.currently_playing = Some(InProgressTrack {
+                    track: track.clone(),
+                    start_instant: Instant::now(),
+                });
+                let device_id = self.device_id();
+                self.setup_next_track(track, device_id).await;
+                spotify.next_track(Some(device_id)).await.unwrap();
+            }
         }
     }
 
     async fn setup_next_track(&self, track: TrackInfo, device_id: &str) {
-        self.spotify
-            .add_item_to_queue(&track.id, Some(device_id))
-            .await
-            .unwrap();
+        if let Some(spotify) = self.spotify().await {
+            spotify
+                .add_item_to_queue(&track.id, Some(device_id))
+                .await
+                .unwrap();
 
-        let tx_clone = self.cmd_tx.clone();
-        tokio::task::spawn(async move {
-            println!(
-                "waking player thread in {} seconds",
-                (track.duration - Duration::from_secs(10)).as_secs()
-            );
-            tokio::time::sleep(track.duration - Duration::from_secs(10)).await;
-            tx_clone.send(PlayerCommand::Wake).await.unwrap();
-        });
+            let tx_clone = self.cmd_tx.clone();
+            tokio::task::spawn(async move {
+                println!(
+                    "waking player thread in {} seconds",
+                    (track.duration - Duration::from_secs(10)).as_secs()
+                );
+                tokio::time::sleep(track.duration - Duration::from_secs(10)).await;
+                tx_clone.send(PlayerCommand::Wake).await.unwrap();
+            });
+        }
     }
 
     async fn add_track_to_queue(&mut self, track_id: TrackId) -> Result<()> {
-        let full_track = self.spotify.track(&track_id).await?;
-        self.queue.push_back(full_track.into());
-
+        if let Some(spotify) = self.spotify().await {
+            let full_track = spotify.track(&track_id).await?;
+            self.queue.push_back(full_track.into());
+        }
         Ok(())
     }
 
     async fn get_currently_playing(&self) -> Result<Option<TrackInfo>> {
-        let playstate_response: Option<CurrentPlaybackContext> = self
-            .spotify
-            .current_playback(
-                None,
-                Some([&AdditionalType::Track, &AdditionalType::Episode]),
-            )
-            .await?;
+        if let Some(spotify) = self.spotify().await {
+            let playstate_response: Option<CurrentPlaybackContext> = spotify
+                .current_playback(
+                    None,
+                    Some([&AdditionalType::Track, &AdditionalType::Episode]),
+                )
+                .await?;
 
-        Ok(playstate_response
-            .map(|playersate| {
-                playersate
-                    .item
-                    .map(|item| match item {
-                        PlayableItem::Track(full_track) => Some(TrackInfo::from(full_track)),
-                        PlayableItem::Episode(_) => None,
-                    })
-                    .flatten()
-            })
-            .flatten())
+            Ok(playstate_response
+                .map(|playersate| {
+                    playersate
+                        .item
+                        .map(|item| match item {
+                            PlayableItem::Track(full_track) => Some(TrackInfo::from(full_track)),
+                            PlayableItem::Episode(_) => None,
+                        })
+                        .flatten()
+                })
+                .flatten())
+        } else {
+            Ok(None)
+        }
     }
 
     fn get_queued_tracks(&self) -> Vec<TrackInfo> {
@@ -205,22 +231,15 @@ impl PlayerState {
     }
 }
 
-pub fn start_player_thread(spotify: Arc<AuthCodeSpotify>) -> PlayerCommader {
-    let (player, tx) = PlayerState::new(spotify);
+pub fn start_player_thread(auth_state: ManagedAuthState) -> PlayerCommader {
+    let (player, tx) = PlayerState::new(auth_state);
     tokio::task::spawn(player_task(player));
     PlayerCommader::new(tx)
 }
 
 async fn player_task(mut player: PlayerState) {
-    if let Err(err) = player.find_target_device().await {
-        println!("ERROR: failed to start player task: {}", err);
-        return;
-    } else {
-        println!(
-            "connected to player device: {}",
-            player.target_device.as_ref().unwrap().id.as_ref().unwrap()
-        );
-    }
+    println!("starting player task");
+
     loop {
         let cmd = player.cmd_rx.recv().await.unwrap(); //it's pretty bad if the channel has been droppped
         match cmd {

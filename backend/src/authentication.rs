@@ -1,9 +1,8 @@
-use std::{collections::HashSet, sync::RwLock};
+use std::{collections::HashSet, sync::Arc};
 
 use rocket::{
     http::Status,
-    outcome::IntoOutcome,
-    request::{self, FromRequest, Outcome},
+    request::{FromRequest, Outcome},
     Request, State,
 };
 use rspotify::{clients::BaseClient, AuthCodeSpotify, Credentials, OAuth, Token};
@@ -15,6 +14,8 @@ pub struct AuthenticationState {
     creds: Credentials,
 }
 
+pub type ManagedAuthState = Arc<Mutex<Option<AuthenticationState>>>;
+
 impl AuthenticationState {
     pub async fn new(client: AuthCodeSpotify) -> AuthenticationState {
         Self {
@@ -22,6 +23,17 @@ impl AuthenticationState {
             token: client.token.lock().await.unwrap().clone(),
             creds: client.creds,
         }
+    }
+
+    pub async fn client(&mut self) -> AuthCodeSpotify {
+        let client = AuthCodeSpotify::new(self.creds.clone(), self.oauth.clone());
+        *client.token.lock().await.unwrap() = self.token.clone();
+
+        client.auto_reauth().await.unwrap();
+
+        self.token = client.token.lock().await.unwrap().clone();
+
+        client
     }
 }
 
@@ -34,9 +46,7 @@ impl<'r> FromRequest<'r> for SpotifyClient {
     type Error = anyhow::Error;
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let auth_state = request
-            .guard::<&State<Mutex<Option<AuthenticationState>>>>()
-            .await;
+        let auth_state = request.guard::<&State<ManagedAuthState>>().await;
         if !auth_state.is_success() {
             return Outcome::Failure((
                 Status::InternalServerError,
@@ -54,13 +64,7 @@ impl<'r> FromRequest<'r> for SpotifyClient {
 
         let mut spotify_auth = maybe_spotify_auth.as_mut().unwrap();
 
-        let mut client =
-            AuthCodeSpotify::new(spotify_auth.creds.clone(), spotify_auth.oauth.clone());
-        *client.token.lock().await.unwrap() = spotify_auth.token.clone();
-
-        client.auto_reauth().await.unwrap();
-
-        spotify_auth.token = client.token.lock().await.unwrap().clone();
+        let client = spotify_auth.client().await;
 
         Outcome::Success(SpotifyClient { spotify: client })
     }
