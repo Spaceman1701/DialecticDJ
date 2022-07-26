@@ -177,7 +177,7 @@ impl PlayerState {
     async fn setup_next_track(&self, track: TrackInfo, device_id: &str) {
         if let Some(spotify) = self.spotify().await {
             spotify
-                .add_item_to_queue(&track.id, Some(device_id))
+                .add_item_to_queue(&track.id.into_id::<TrackId>(), Some(device_id))
                 .await
                 .unwrap();
 
@@ -215,7 +215,9 @@ impl PlayerState {
                     playersate
                         .item
                         .map(|item| match item {
-                            PlayableItem::Track(full_track) => Some(TrackInfo::from(full_track)),
+                            PlayableItem::Track(full_track) => {
+                                Some(TrackInfo::from(full_track))
+                            }
                             PlayableItem::Episode(_) => None,
                         })
                         .flatten()
@@ -278,7 +280,10 @@ async fn player_task(mut player: PlayerState) {
     }
 }
 
-fn item_duration_almost_done(item: &Option<PlayableItem>, progress: &Option<Duration>) -> bool {
+fn item_duration_almost_done(
+    item: &Option<PlayableItem>,
+    progress: &Option<Duration>,
+) -> bool {
     if item.is_none() || progress.is_none() {
         //If there's nothing playing, we should probably just skip to the next song
         return true;

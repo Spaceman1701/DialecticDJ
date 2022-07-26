@@ -27,6 +27,16 @@ async fn rocket() -> _ {
     let auth: ManagedAuthState = Arc::default();
     let player_cmd = player::start_player_thread(auth.clone());
 
+    let data_store_result = persistence::PostgressDatabase::connect().await;
+    if let Err(e) = data_store_result {
+        panic!("failed to connect to database: {}", e);
+    }
+    let data_store = data_store_result.unwrap();
+    let create_tables_res = data_store.create_tables().await;
+    if let Err(e) = create_tables_res {
+        panic!("failed to create tables: {}", e);
+    }
+
     rocket::build()
         .mount(
             "/",
@@ -52,7 +62,8 @@ async fn rocket() -> _ {
                     "POST, GET, PATCH, OPTIONS",
                 ));
                 response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
-                response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
+                response
+                    .set_header(Header::new("Access-Control-Allow-Credentials", "true"));
             })
         }))
 }

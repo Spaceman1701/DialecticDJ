@@ -1,24 +1,46 @@
 use ddj_core::types::Track;
+use sqlx::FromRow;
 use std::time::Duration;
 
 use rocket::serde::{Deserialize, Serialize};
-use rspotify::model::{FullTrack, SimplifiedAlbum, TrackId};
+use rspotify::model::{FullTrack, Id, SimplifiedAlbum, TrackId};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[repr(transparent)]
+#[derive(Clone, Serialize, Deserialize, FromRow, Debug)]
+pub struct SpotifyItemId(pub String);
+
+impl SpotifyItemId {
+    pub fn into_id<T: Id>(&self) -> T {
+        let res = T::from_id(&self.0);
+        if let Err(_) = res {
+            panic!("invalid characters found in a spotify item id");
+        }
+        return res.unwrap();
+    }
+}
+
+impl<T: Id> From<T> for SpotifyItemId {
+    fn from(id: T) -> Self {
+        let id_str = id.id().to_owned();
+        return Self(id_str);
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
 pub struct TrackInfo {
-    pub id: TrackId,
+    pub id: SpotifyItemId,
     pub name: String,
     pub duration: Duration,
-    pub album: SimplifiedAlbum,
+    pub album: Album,
 }
 
 impl From<FullTrack> for TrackInfo {
     fn from(track: FullTrack) -> Self {
         return TrackInfo {
-            id: track.id.unwrap(),
+            id: track.id.unwrap().into(),
             name: track.name,
             duration: track.duration,
-            album: track.album,
+            album: track.album.into(),
         };
     }
 }
@@ -27,10 +49,25 @@ impl Into<Track> for &TrackInfo {
     fn into(self) -> Track {
         Track {
             name: self.name.clone(),
-            id: self.id.to_string(),
+            id: self.id.0.clone(),
             artists: Vec::new(),
             duration: self.duration,
-            album_art_link: self.album.images.first().map(|image| image.url.clone()),
+            album_art_link: self.album.first_image_url.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+pub struct Album {
+    name: String,
+    first_image_url: Option<String>,
+}
+
+impl From<SimplifiedAlbum> for Album {
+    fn from(input: SimplifiedAlbum) -> Self {
+        Self {
+            name: input.name,
+            first_image_url: input.images.first().map(|image| image.url.clone()),
         }
     }
 }

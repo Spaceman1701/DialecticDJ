@@ -58,7 +58,9 @@ impl<'r> FromRequest<'r> for SpotifyClient {
         if maybe_spotify_auth.is_none() {
             return Outcome::Failure((
                 Status::Unauthorized,
-                anyhow::Error::msg("the admin for this session does not have valid credentials"),
+                anyhow::Error::msg(
+                    "the admin for this session does not have valid credentials",
+                ),
             ));
         }
 

@@ -139,16 +139,18 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                 model.currently_playing = player_state.current_track;
                 model.queue = player_state.queue;
             }
-            Err(_) => model.loaded = LoadingState::Error("player state fetch failed".to_owned()),
+            Err(_) => {
+                model.loaded = LoadingState::Error("player state fetch failed".to_owned())
+            }
         },
         Msg::EnterSearchMode => {
             model.page = Page::Search(false);
         }
         Msg::SearchInputChanged(new_input) => {
             if model.page == Page::Search(false) {
-                orders.perform_cmd(
-                    async move { Msg::SearchResultAvailable(search(&new_input).await) },
-                );
+                orders.perform_cmd(async move {
+                    Msg::SearchResultAvailable(search(&new_input).await)
+                });
                 model.search_model.in_progress = true;
             }
         }
@@ -219,22 +221,24 @@ async fn search(query: &str) -> fetch::Result<Vec<Track>> {
 }
 
 async fn add_track_to_queue(track: &Track) -> fetch::Result<()> {
-    let request = Request::new(format!("{}/queue/{}", BASE_URL, &track.id)).method(Method::Post);
+    let request =
+        Request::new(format!("{}/queue/{}", BASE_URL, &track.id)).method(Method::Post);
     fetch(request).await?;
 
     Ok(())
 }
 
 async fn request_login_url() -> fetch::Result<String> {
-    let request = Request::new(format!("{}/start_auth_flow", BASE_URL)).method(Method::Post);
+    let request =
+        Request::new(format!("{}/start_auth_flow", BASE_URL)).method(Method::Post);
     let response = fetch(request).await?;
     let payload = response.text().await?;
     Ok(payload)
 }
 
 async fn send_code(code: &str) {
-    let request =
-        Request::new(format!("{}/finish_auth_flow/{}", BASE_URL, code)).method(Method::Post);
+    let request = Request::new(format!("{}/finish_auth_flow/{}", BASE_URL, code))
+        .method(Method::Post);
     let response = fetch(request).await.unwrap();
 }
 

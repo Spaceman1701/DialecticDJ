@@ -1,34 +1,32 @@
 use std::env;
 
 use anyhow::Result;
-use sqlx::{postgres::PgPoolOptions, query::Query, Pool, Postgres};
+use ddj_core::types::Track;
+use rocket::futures::StreamExt;
+use sqlx::{postgres::PgPoolOptions, query::Query, Pool, Postgres, Row};
 
+use crate::model::TrackInfo;
+
+mod macros;
 mod queries;
 
-// async fn init_postgress() -> anyhow::Result<()> {
-//     // let hostname = env::var("POSTGRESS_HOST")?;
-//     // let user = env::var("POSTGRESS_USER")?;
-//     // let password = env::var("POSTGRESS_PASSWORD")?;
-//     // let connection_string = format!("host={} user={} password={}", hostname, user, password);
-
-//     // let (client, conn) = tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
-
-//     // tokio::spawn(async move {
-//     //     if let Err(e) = conn.await {
-//     //         eprintln!("postgress connection error: {}", e);
-//     //     }
-//     // });
-
-//     // Ok(())
-// }
-struct Foo {
-    foo: i64,
+macro_rules! create_table {
+    ($query:expr, $executor:expr) => {{
+        let res = sqlx::query($query).execute($executor).await;
+        if let Err(e) = &res {
+            eprintln!("failed to run {}: {}", $query, e);
+        } else {
+            println!("successfully ran {}", $query);
+        }
+        res
+    }};
 }
 
 ///Trait abstracting storage requirements for DDJ
 #[rocket::async_trait]
 pub trait PersistentStore {
     async fn create_tables(&self) -> Result<()>;
+    async fn get_track_queue(&self, limit: u32) -> Result<()>;
 }
 
 ///Literally a Box<dyn PersistentStore + Send + Sync>
@@ -42,9 +40,9 @@ pub struct PostgressDatabase {
 
 impl PostgressDatabase {
     pub async fn connect() -> Result<Store> {
-        let hostname = env::var("POSTGRESS_HOST")?;
-        let user = env::var("POSTGRESS_USER")?;
-        let password = env::var("POSTGRESS_PASSWORD")?;
+        let hostname = env::var("POSTGRES_HOST")?;
+        let user = env::var("POSTGRES_USER")?;
+        let password = env::var("POSTGRES_PASSWORD")?;
 
         let connection_str = format!("postgres://{user}:{password}@{hostname}/ddj");
 
@@ -60,13 +58,21 @@ impl PostgressDatabase {
 #[rocket::async_trait]
 impl PersistentStore for PostgressDatabase {
     async fn create_tables(&self) -> Result<()> {
-        sqlx::query(queries::CREATE_TASK_TABLE)
-            .execute(&self.pool)
-            .await?;
+        create_table!(queries::CREATE_ARTIST_TABLE, &self.pool)?;
+        create_table!(queries::CREATE_TASK_TABLE, &self.pool)?;
+        create_table!(queries::CREATE_PLAYED_TRACKS_TABLE, &self.pool)?;
+        create_table!(queries::CREATE_TRACK_QUEUE_TABLE, &self.pool)?;
+        create_table!(queries::CREATE_ALUBMS_TABLE, &self.pool)?;
 
-        sqlx::query(queries::CREATE_PLAYED_TRACKS_TABLE)
-            .execute(&self.pool)
-            .await?;
+        Ok(())
+    }
+
+    async fn get_track_queue(&self, limit: u32) -> Result<()> {
+        let mut result = sqlx::query(queries::GET_NEXT_N_TRACKS)
+            .bind(limit as i32)
+            .fetch(&self.pool);
+
+        let tracks = result.map(|row| {});
 
         Ok(())
     }
