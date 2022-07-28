@@ -1,12 +1,12 @@
 use ddj_core::types::Track;
-use sqlx::FromRow;
+use sqlx::{postgres::PgRow, ColumnIndex, FromRow, Row};
 use std::time::Duration;
 
 use rocket::serde::{Deserialize, Serialize};
 use rspotify::model::{FullTrack, Id, SimplifiedAlbum, TrackId};
 
 #[repr(transparent)]
-#[derive(Clone, Serialize, Deserialize, FromRow, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SpotifyItemId(pub String);
 
 impl SpotifyItemId {
@@ -26,7 +26,7 @@ impl<T: Id> From<T> for SpotifyItemId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrackInfo {
     pub id: SpotifyItemId,
     pub name: String,
@@ -45,6 +45,14 @@ impl From<FullTrack> for TrackInfo {
     }
 }
 
+// impl<'r> FromRow<'r, PgRow> for TrackInfo {
+//     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+//         let id = row.try_get("id")?;
+//         let name = row.try_get("name")?;
+//         let duration = row.try_get("duration")?;
+//     }
+// }
+
 impl Into<Track> for &TrackInfo {
     fn into(self) -> Track {
         Track {
@@ -57,8 +65,9 @@ impl Into<Track> for &TrackInfo {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Album {
+    id: SpotifyItemId,
     name: String,
     first_image_url: Option<String>,
 }
@@ -66,8 +75,23 @@ pub struct Album {
 impl From<SimplifiedAlbum> for Album {
     fn from(input: SimplifiedAlbum) -> Self {
         Self {
+            id: input.id.unwrap().into(),
             name: input.name,
             first_image_url: input.images.first().map(|image| image.url.clone()),
         }
+    }
+}
+
+impl<'r> FromRow<'r, PgRow> for Album {
+    fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
+        let id = row.try_get("id")?;
+        let name = row.try_get("name")?;
+        let first_image_url = row.try_get("cover_image_url")?;
+
+        return Ok(Album {
+            id: SpotifyItemId(id),
+            name: name,
+            first_image_url: first_image_url,
+        });
     }
 }

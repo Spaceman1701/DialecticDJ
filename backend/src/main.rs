@@ -27,7 +27,7 @@ async fn rocket() -> _ {
     let auth: ManagedAuthState = Arc::default();
     let player_cmd = player::start_player_thread(auth.clone());
 
-    let data_store_result = persistence::PostgressDatabase::connect().await;
+    let data_store_result = persistence::pgsql::PostgressDatabase::connect().await;
     if let Err(e) = data_store_result {
         panic!("failed to connect to database: {}", e);
     }
@@ -53,6 +53,7 @@ async fn rocket() -> _ {
         )
         .manage(player_cmd)
         .manage(auth)
+        .manage(data_store)
         .configure(config)
         .attach(AdHoc::on_response("CORS Headers", |_, response| {
             Box::pin(async move {

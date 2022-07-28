@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ddj_core::types::{PlayerState, Track};
 use rocket::{http::Status, response::status::BadRequest, serde::json::Json, State};
 use rspotify::{
@@ -9,6 +11,10 @@ use rspotify::{
 use crate::{
     authentication::{self, AuthenticationState, ManagedAuthState, SpotifyClient},
     model::TrackInfo,
+    persistence::{
+        model::{SpotifyAlbum, SpotifyTrack},
+        Store,
+    },
     player::PlayerCommader,
 };
 
@@ -48,6 +54,7 @@ pub async fn play_track(state: &State<PlayerCommader>) {
 #[post("/queue/<track_id>")]
 pub async fn add_track_to_queue(
     player_cmd: &State<PlayerCommader>,
+    store: &State<Store>,
     track_id: String,
 ) -> Result<(), BadRequest<()>> {
     let id = TrackId::from_id(&track_id);
@@ -55,6 +62,19 @@ pub async fn add_track_to_queue(
         Err(_) => Err(BadRequest(None)),
         Ok(unwrapped_id) => {
             player_cmd.add_track_to_queue(unwrapped_id).await.unwrap();
+            store
+                .add_track_to_queue(SpotifyTrack {
+                    id: track_id,
+                    name: "n/a".to_owned(),
+                    duration: Duration::from_secs(0),
+                    album: SpotifyAlbum {
+                        name: "n/a".to_owned(),
+                        id: "n/a".to_owned(),
+                        cover_image_url: "n/a".to_owned(),
+                    },
+                })
+                .await
+                .unwrap();
             Ok(())
         }
     }
