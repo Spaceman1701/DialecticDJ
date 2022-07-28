@@ -26,7 +26,7 @@ pub struct PostgressDatabase {
 }
 
 impl PostgressDatabase {
-    pub async fn connect() -> Result<Store> {
+    async fn new() -> Result<Self> {
         let hostname = env::var("POSTGRES_HOST")?;
         let user = env::var("POSTGRES_USER")?;
         let password = env::var("POSTGRES_PASSWORD")?;
@@ -38,7 +38,11 @@ impl PostgressDatabase {
             .connect(&connection_str)
             .await?;
 
-        Ok(Arc::new(Self { pool: conn_pool }))
+        Ok(Self { pool: conn_pool })
+    }
+    pub async fn connect() -> Result<Store> {
+        let db = Self::new().await?;
+        Ok(Arc::new(db))
     }
 }
 
@@ -107,11 +111,11 @@ impl PersistentStore for PostgressDatabase {
         const INSERT_TRACK_QUERY: &str = "
             INSERT INTO tracks (id, name, duration)
                 VALUES ($1, $2, $3)
-            ON DO NOTHING;
+            ON CONFLICT DO NOTHING;
         ";
         const INSERT_QUEUED_QUERY: &str = "
             INSERT INTO queued_tracks (track_id)
-                VALUES ($1, $2)
+                VALUES ($1)
         ";
 
         let mut tx = self.pool.begin().await?;
@@ -189,8 +193,68 @@ mod queries {
     pub const CREATE_TRACK_QUEUE_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS queued_tracks (
         id SERIAL PRIMARY KEY,
-        added_date TIMESTAMP,
+        added_date timestamp DEFAULT current_timestamp,
         track_id text REFERENCES tracks (id)
     );
 ";
+}
+
+#[cfg(test)]
+mod tests {
+    use core::panic;
+    use std::{any::Any, future::Future};
+
+    use super::*;
+
+    async fn setup_db() -> PostgressDatabase {
+        let db = PostgressDatabase::new().await.unwrap();
+        db.create_tables().await.unwrap();
+        db
+    }
+
+    async fn teardown_tb(db: PostgressDatabase) {
+        const DROP_SCHEMA: &str = "DROP SCHEMA public CASCADE;";
+        const RECREATE_SCHEMA: &str = "CREATE SCHEMA public;";
+        const GRANT_TO_PUBLIC: &str = "GRANT ALL ON SCHEMA public TO public;";
+
+        sqlx::query(DROP_SCHEMA).execute(&db.pool).await.unwrap();
+        sqlx::query(RECREATE_SCHEMA)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        sqlx::query(GRANT_TO_PUBLIC)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    async fn db_test(test: impl Future<Output = Result<()>>) -> Result<()> {
+        let db = setup_db().await;
+        let test_result = test.await; //TODO: handle panics
+        teardown_tb(db).await;
+        test_result
+    }
+
+    #[tokio::test]
+    async fn test_add_track_to_queue() -> Result<()> {
+        let db = setup_db().await;
+
+        db.create_tables().await?;
+        db.add_track_to_queue(SpotifyTrack {
+            id: "abcde".to_owned(),
+            name: "Example Song".to_owned(),
+            duration: Duration::from_secs(360),
+            album: SpotifyAlbum {
+                name: "Example Album".to_owned(),
+                id: "abcdefg".to_owned(),
+                cover_image_url: "http://fake-album-cover.com/image.jpg".to_owned(),
+            },
+        })
+        .await?;
+
+        teardown_tb(db).await;
+
+        Ok(())
+    }
 }
