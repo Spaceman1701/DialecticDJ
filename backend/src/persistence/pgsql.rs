@@ -49,11 +49,11 @@ impl PostgressDatabase {
 #[rocket::async_trait]
 impl PersistentStore for PostgressDatabase {
     async fn create_tables(&self) -> Result<()> {
+        create_table!(queries::CREATE_ALUBMS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_ARTIST_TABLE, &self.pool)?;
         create_table!(queries::CREATE_TRACKS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_PLAYED_TRACKS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_TRACK_QUEUE_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_ALUBMS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_ARTIST_TO_TRACK_TABLE, &self.pool);
 
         Ok(())
@@ -61,18 +61,17 @@ impl PersistentStore for PostgressDatabase {
 
     async fn get_track_queue(&self, limit: u32) -> Result<Vec<SpotifyTrack>> {
         const QUERY: &str = "
-            SELECT 
-            (
-                track_queue.id, 
-                tracks.name, 
-                tracks.duration, 
-                albums.id, 
-                albums.name, 
-                albums.cover_image_url
-            ) FROM track_queue
-            LEFT JOIN track_queue.id = tracks.id
-            LEFT JOIN tracks.album_id = albums.id
-            ORDER BY tracks.added_date DESC 
+            SELECT
+                queued_tracks.track_id  AS track_id, 
+                tracks.name             AS track_name, 
+                tracks.duration         AS track_dur, 
+                tracks.album_id         AS album_id, 
+                albums.name             AS album_name, 
+                albums.cover_image_url  AS album_image
+            FROM queued_tracks
+            LEFT JOIN tracks ON queued_tracks.track_id = tracks.id
+            LEFT JOIN albums ON tracks.album_id = albums.id
+            ORDER BY queued_tracks.added_date DESC 
             LIMIT ($1);";
 
         let result = sqlx::query(QUERY)
@@ -83,13 +82,13 @@ impl PersistentStore for PostgressDatabase {
         result
             .into_iter()
             .map(|row| -> Result<SpotifyTrack> {
-                let track_id = row.try_get("track_queue.id")?;
-                let track_name = row.try_get("tracks.name")?;
-                let track_duration: i64 = row.try_get("tracks.duration")?;
+                let track_id = row.try_get("track_id")?;
+                let track_name = row.try_get("track_name")?;
+                let track_duration: i64 = row.try_get("track_dur")?;
 
-                let album_id = row.try_get("albums.id")?;
-                let album_name = row.try_get("albums.name")?;
-                let album_cover_image_url = row.try_get("albums.cover_image_url")?;
+                let album_id = row.try_get("album_id")?;
+                let album_name = row.try_get("album_name")?;
+                let album_cover_image_url = row.try_get("album_image")?;
 
                 let track = SpotifyTrack {
                     id: track_id,
@@ -109,8 +108,13 @@ impl PersistentStore for PostgressDatabase {
 
     async fn add_track_to_queue(&self, track: SpotifyTrack) -> Result<()> {
         const INSERT_TRACK_QUERY: &str = "
-            INSERT INTO tracks (id, name, duration)
-                VALUES ($1, $2, $3)
+            INSERT INTO tracks (id, name, album_id, duration)
+                VALUES ($1, $2, $3, $4)
+            ON CONFLICT DO NOTHING;
+        ";
+        const INSERT_ALBUM_QUERY: &str = "
+            INSERT INTO albums (id, name, cover_image_url)
+                VALUES ($1, $2, $2)
             ON CONFLICT DO NOTHING;
         ";
         const INSERT_QUEUED_QUERY: &str = "
@@ -120,9 +124,17 @@ impl PersistentStore for PostgressDatabase {
 
         let mut tx = self.pool.begin().await?;
 
+        sqlx::query(INSERT_ALBUM_QUERY)
+            .bind(&track.album.id)
+            .bind(&track.album.name)
+            .bind(&track.album.cover_image_url)
+            .execute(&mut tx)
+            .await?;
+
         sqlx::query(INSERT_TRACK_QUERY)
             .bind(&track.id)
             .bind(&track.name)
+            .bind(&track.album.id)
             .bind(track.duration.as_secs() as i64)
             .execute(&mut tx)
             .await?;
@@ -138,23 +150,12 @@ impl PersistentStore for PostgressDatabase {
     }
 }
 
-struct Column(&'static str, &'static str, Option<&'static str>);
-
-impl Column {
-    fn get_descriptor(&self) -> String {
-        if let Some(constraint) = self.2 {
-            format!("{} {} {}", self.0, self.1, self.2.unwrap())
-        } else {
-            format!("{} {}", self.0, self.1)
-        }
-    }
-}
-
 mod queries {
     pub const CREATE_TRACKS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS tracks (
         name text,
         id text PRIMARY KEY,
+        album_id text REFERENCES albums (id),
         duration bigint        
     );
 ";
@@ -252,6 +253,12 @@ mod tests {
             },
         })
         .await?;
+
+        let tracks = db.get_track_queue(1).await?;
+        assert_eq!(tracks.len(), 1);
+
+        let retrieved = tracks.get(0).unwrap();
+        assert_eq!(retrieved.name, "Example Song");
 
         teardown_tb(db).await;
 
