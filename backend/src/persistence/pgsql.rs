@@ -1,7 +1,9 @@
 use std::{env, ops::Add, sync::Arc, time::Duration};
 
-use rocket::http::private::cookie::Display;
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
+use sqlx::{
+    postgres::{PgPoolOptions, PgRow},
+    Pool, Postgres, Row,
+};
 
 use crate::persistence::model::SpotifyAlbum;
 
@@ -54,7 +56,7 @@ impl PersistentStore for PostgressDatabase {
         create_table!(queries::CREATE_TRACKS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_PLAYED_TRACKS_TABLE, &self.pool)?;
         create_table!(queries::CREATE_TRACK_QUEUE_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_ARTIST_TO_TRACK_TABLE, &self.pool);
+        create_table!(queries::CREATE_ARTIST_TO_TRACK_TABLE, &self.pool)?;
 
         Ok(())
     }
@@ -81,28 +83,7 @@ impl PersistentStore for PostgressDatabase {
 
         result
             .into_iter()
-            .map(|row| -> Result<SpotifyTrack> {
-                let track_id = row.try_get("track_id")?;
-                let track_name = row.try_get("track_name")?;
-                let track_duration: i64 = row.try_get("track_dur")?;
-
-                let album_id = row.try_get("album_id")?;
-                let album_name = row.try_get("album_name")?;
-                let album_cover_image_url = row.try_get("album_image")?;
-
-                let track = SpotifyTrack {
-                    id: track_id,
-                    name: track_name,
-                    duration: Duration::from_secs(track_duration as u64),
-                    album: SpotifyAlbum {
-                        id: album_id,
-                        name: album_name,
-                        cover_image_url: album_cover_image_url,
-                    },
-                };
-
-                Ok(track)
-            })
+            .map(|row| extract_track_from_row(&row))
             .collect()
     }
 
@@ -148,6 +129,84 @@ impl PersistentStore for PostgressDatabase {
 
         Ok(())
     }
+
+    async fn get_track_by_id(&self, id: &str) -> Result<SpotifyTrack> {
+        const QUERY: &str = "
+            SELECT 
+                tracks.track_id         AS track_id, 
+                tracks.name             AS track_name, 
+                tracks.duration         AS track_dur, 
+                tracks.album_id         AS album_id, 
+                albums.name             AS album_name, 
+                albums.cover_image_url  AS album_image 
+            FROM tracks
+            LEFT JOIN albums ON track.album_id = album.id
+            WHERE tracks.track_id = $1
+            LIMIT 1;
+        ";
+
+        let result = sqlx::query(QUERY).bind(id).fetch_one(&self.pool).await?;
+
+        extract_track_from_row(&result)
+    }
+
+    async fn pop_track_from_queue(&self) -> Result<Option<SpotifyTrack>> {
+        const GET_NEXT_TRACK_QUERY: &str = "
+            SELECT id FROM queued_tracks ORDER BY added_date DESC LIMIT 1;
+        ";
+        const REMOVE_AND_RETURN_QUERY: &str = "DELETE FROM queued_tracks WHERE id = $1;";
+
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(GET_NEXT_TRACK_QUERY)
+            .fetch_optional(&mut tx)
+            .await?;
+
+        if let None = result {
+            return Ok(None);
+        }
+        let unwrapped_res = result.unwrap();
+        let target_id: &str = unwrapped_res.try_get("id")?;
+
+        sqlx::query(REMOVE_AND_RETURN_QUERY)
+            .bind(target_id)
+            .execute(&mut tx)
+            .await?;
+
+        tx.commit().await?;
+
+        let track = self.get_track_by_id(target_id).await;
+        match track {
+            Ok(t) => Ok(Some(t)),
+            Err(e) => Err(anyhow::Error::msg(format!(
+                "failed to retrieve track from db: {}",
+                e
+            ))),
+        }
+    }
+}
+
+fn extract_track_from_row(row: &PgRow) -> Result<SpotifyTrack> {
+    let track_id = row.try_get("track_id")?;
+    let track_name = row.try_get("track_name")?;
+    let track_duration: i64 = row.try_get("track_dur")?;
+
+    let album_id = row.try_get("album_id")?;
+    let album_name = row.try_get("album_name")?;
+    let album_cover_image_url = row.try_get("album_image")?;
+
+    let track = SpotifyTrack {
+        id: track_id,
+        name: track_name,
+        duration: Duration::from_secs(track_duration as u64),
+        album: SpotifyAlbum {
+            id: album_id,
+            name: album_name,
+            cover_image_url: album_cover_image_url,
+        },
+    };
+
+    Ok(track)
 }
 
 mod queries {
