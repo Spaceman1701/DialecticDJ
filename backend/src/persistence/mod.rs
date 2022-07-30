@@ -1,17 +1,11 @@
-use std::{env, sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
-use ddj_core::types::Track;
-use rocket::futures::StreamExt;
-use sqlx::{postgres::PgPoolOptions, query::Query, Pool, Postgres, Row};
 
-use crate::{model::TrackInfo, persistence::model::SpotifyAlbum};
-
-use self::{model::SpotifyTrack, retrievers::QueuedTrackRef};
+use self::model::SpotifyTrack;
 
 pub mod model;
 pub mod pgsql;
-mod retrievers;
 
 ///Trait abstracting storage requirements for DDJ
 #[rocket::async_trait]

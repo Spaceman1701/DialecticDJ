@@ -64,7 +64,7 @@ impl<'r> FromRequest<'r> for SpotifyClient {
             ));
         }
 
-        let mut spotify_auth = maybe_spotify_auth.as_mut().unwrap();
+        let spotify_auth = maybe_spotify_auth.as_mut().unwrap();
 
         let client = spotify_auth.client().await;
 

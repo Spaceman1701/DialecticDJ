@@ -1,4 +1,4 @@
-use std::{env, ops::Add, sync::Arc, time::Duration};
+use std::{env, sync::Arc, time::Duration};
 
 use sqlx::{
     postgres::{PgPoolOptions, PgRow},

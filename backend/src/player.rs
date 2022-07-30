@@ -1,9 +1,4 @@
-use std::{
-    collections::VecDeque,
-    process::id,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Error, Result};
 use rspotify::{
@@ -14,10 +9,7 @@ use rspotify::{
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 
-use crate::{
-    authentication::{AuthenticationState, ManagedAuthState, SpotifyClient},
-    model::TrackInfo,
-};
+use crate::{authentication::ManagedAuthState, model::TrackInfo};
 
 pub type PlayerCommandQueue = Sender<PlayerCommand>;
 
@@ -57,7 +49,6 @@ impl PlayerCommader {
 struct PlayerState {
     auth_state: ManagedAuthState,
     queue: VecDeque<TrackInfo>,
-    currently_playing: Option<InProgressTrack>,
     cmd_rx: Receiver<PlayerCommand>,
     cmd_tx: PlayerCommandQueue,
     target_device: Option<Device>,
@@ -88,7 +79,6 @@ impl PlayerState {
             PlayerState {
                 auth_state: auth_state,
                 queue: VecDeque::new(),
-                currently_playing: None,
                 cmd_rx: rx,
                 cmd_tx: tx.clone(),
                 target_device: None,
@@ -142,7 +132,6 @@ impl PlayerState {
             if playstate_response.is_none() {
                 return Err(anyhow::Error::msg("player state is unavailable"));
             }
-            let playerstate = playstate_response.unwrap();
 
             let front = self.queue.pop_front();
             if let Some(track_info) = front {
@@ -160,13 +149,12 @@ impl PlayerState {
     }
 
     async fn start(&mut self) {
-        self.find_target_device().await;
+        match self.find_target_device().await {
+            Err(e) => println!("failed to find device: {}", e),
+            _ => (),
+        };
         if let Some(track) = self.queue.pop_front() {
             if let Some(spotify) = self.spotify().await {
-                self.currently_playing = Some(InProgressTrack {
-                    track: track.clone(),
-                    start_instant: Instant::now(),
-                });
                 let device_id = self.device_id();
                 self.setup_next_track(track, device_id).await;
                 spotify.next_track(Some(device_id)).await.unwrap();
@@ -278,26 +266,4 @@ async fn player_task(mut player: PlayerState) {
             }
         }
     }
-}
-
-fn item_duration_almost_done(
-    item: &Option<PlayableItem>,
-    progress: &Option<Duration>,
-) -> bool {
-    if item.is_none() || progress.is_none() {
-        //If there's nothing playing, we should probably just skip to the next song
-        return true;
-    }
-
-    let total_duration = match item.as_ref().unwrap() {
-        PlayableItem::Track(track) => track.duration,
-        PlayableItem::Episode(episode) => episode.duration,
-    };
-
-    return total_duration - progress.unwrap() < Duration::from_secs(15);
-}
-
-struct InProgressTrack {
-    track: TrackInfo,
-    start_instant: Instant,
 }

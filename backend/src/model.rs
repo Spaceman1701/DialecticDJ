@@ -1,9 +1,9 @@
 use ddj_core::types::Track;
-use sqlx::{postgres::PgRow, ColumnIndex, FromRow, Row};
+use sqlx::{postgres::PgRow, FromRow, Row};
 use std::time::Duration;
 
 use rocket::serde::{Deserialize, Serialize};
-use rspotify::model::{FullTrack, Id, SimplifiedAlbum, TrackId};
+use rspotify::model::{FullTrack, Id, SimplifiedAlbum};
 
 #[repr(transparent)]
 #[derive(Clone, Serialize, Deserialize, Debug)]
