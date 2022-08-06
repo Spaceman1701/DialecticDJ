@@ -1,14 +1,18 @@
+#![feature(associated_type_bounds)]
+
 use authentication::ManagedAuthState;
 
 use rocket::fairing::AdHoc;
 
 use rocket::http::Header;
+use rspotify::Credentials;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 mod authentication;
 mod model;
+
 mod persistence;
 mod player;
 mod routes;
@@ -18,6 +22,10 @@ extern crate rocket;
 
 #[launch]
 async fn rocket() -> _ {
+    let creds = Credentials::from_env();
+    if creds.is_none() {
+        panic!("can't start server without available spotify app credentials");
+    }
     let config = rocket::Config {
         address: std::net::IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         port: 8090,
@@ -49,6 +57,8 @@ async fn rocket() -> _ {
                 routes::handle_options,
                 routes::start_auth_flow,
                 routes::finish_auth_flow,
+                routes::create_session,
+                routes::authenticate_session
             ],
         )
         .manage(player_cmd)

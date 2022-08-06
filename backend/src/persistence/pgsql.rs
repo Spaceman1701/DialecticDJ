@@ -1,11 +1,24 @@
-use std::{env, sync::Arc, time::Duration};
-
-use sqlx::{
-    postgres::{PgPoolOptions, PgRow},
-    Pool, Postgres, Row,
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+    time::Duration,
 };
 
-use crate::persistence::model::SpotifyAlbum;
+use rspotify::Token;
+use sqlx::{
+    postgres::{PgPoolOptions, PgRow},
+    types::chrono::{self, DateTime, Utc},
+    Database, Executor, Pool, Postgres, Row, Transaction,
+};
+use uuid::Uuid;
+
+use crate::{
+    authentication::scopes,
+    persistence::model::{PlaySession, SpotifyAlbum},
+};
 
 use super::{model::SpotifyTrack, PersistentStore, Store};
 
@@ -24,11 +37,11 @@ macro_rules! create_table {
 }
 
 pub struct PostgressDatabase {
-    pool: Pool<Postgres>,
+    executor: Pool<Postgres>,
 }
 
 impl PostgressDatabase {
-    async fn new() -> Result<Self> {
+    async fn new<'c>() -> Result<Self> {
         let hostname = env::var("POSTGRES_HOST")?;
         let user = env::var("POSTGRES_USER")?;
         let password = env::var("POSTGRES_PASSWORD")?;
@@ -40,8 +53,11 @@ impl PostgressDatabase {
             .connect(&connection_str)
             .await?;
 
-        Ok(Self { pool: conn_pool })
+        Ok(Self {
+            executor: conn_pool,
+        })
     }
+
     pub async fn connect() -> Result<Store> {
         let db = Self::new().await?;
         Ok(Arc::new(db))
@@ -51,12 +67,13 @@ impl PostgressDatabase {
 #[rocket::async_trait]
 impl PersistentStore for PostgressDatabase {
     async fn create_tables(&self) -> Result<()> {
-        create_table!(queries::CREATE_ALUBMS_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_ARTIST_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_TRACKS_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_PLAYED_TRACKS_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_TRACK_QUEUE_TABLE, &self.pool)?;
-        create_table!(queries::CREATE_ARTIST_TO_TRACK_TABLE, &self.pool)?;
+        create_table!(queries::CREATE_SESSION_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_ALUBMS_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_ARTIST_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_TRACKS_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_PLAYED_TRACKS_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_TRACK_QUEUE_TABLE, &self.executor)?;
+        create_table!(queries::CREATE_ARTIST_TO_TRACK_TABLE, &self.executor)?;
 
         Ok(())
     }
@@ -78,7 +95,7 @@ impl PersistentStore for PostgressDatabase {
 
         let result = sqlx::query(QUERY)
             .bind(limit as i32)
-            .fetch_all(&self.pool)
+            .fetch_all(&self.executor)
             .await?;
 
         result
@@ -103,7 +120,7 @@ impl PersistentStore for PostgressDatabase {
                 VALUES ($1)
         ";
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.executor.begin().await?;
 
         sqlx::query(INSERT_ALBUM_QUERY)
             .bind(&track.album.id)
@@ -145,7 +162,10 @@ impl PersistentStore for PostgressDatabase {
             LIMIT 1;
         ";
 
-        let result = sqlx::query(QUERY).bind(id).fetch_one(&self.pool).await?;
+        let result = sqlx::query(QUERY)
+            .bind(id)
+            .fetch_one(&self.executor)
+            .await?;
 
         extract_track_from_row(&result)
     }
@@ -156,7 +176,7 @@ impl PersistentStore for PostgressDatabase {
         ";
         const REMOVE_AND_RETURN_QUERY: &str = "DELETE FROM queued_tracks WHERE id = $1;";
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.executor.begin().await?;
 
         let result = sqlx::query(GET_NEXT_TRACK_QUERY)
             .fetch_optional(&mut tx)
@@ -183,6 +203,103 @@ impl PersistentStore for PostgressDatabase {
                 e
             ))),
         }
+    }
+
+    async fn create_session(&self, name: &str) -> Result<super::model::PlaySession> {
+        const QUERY: &str = "
+            INSERT INTO sessions (id, name, access_token, refresh_token, expires_at)
+                VALUES ($1, $2, '', '', current_timestamp);
+        ";
+        let uuid = Uuid::new_v4();
+        sqlx::query(QUERY)
+            .bind(&uuid)
+            .bind(name)
+            .execute(&self.executor)
+            .await?;
+
+        Ok(PlaySession {
+            id: uuid,
+            name: name.to_owned(),
+            token: None,
+        })
+    }
+
+    async fn update_session(&self, session: &super::model::PlaySession) -> Result<()> {
+        const QUERY: &str = "
+            UPDATE sessions 
+            SET name = $1, access_token = $2, refresh_token = $3, expires_at = $4
+            WHERE id = $5;
+        ";
+
+        if let None = session.token {
+            return Err(anyhow::Error::msg(
+                "can't update database with unauthenticated session",
+            ));
+        }
+        let token = session.token.as_ref().unwrap();
+        let refresh_token = if token.refresh_token.is_none() {
+            ""
+        } else {
+            token.refresh_token.as_ref().unwrap()
+        };
+
+        let expires_at = token.expires_at.as_ref();
+
+        sqlx::query(QUERY)
+            .bind(&session.name)
+            .bind(&token.access_token)
+            .bind(refresh_token)
+            .bind(expires_at)
+            .execute(&self.executor)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_session(&self, id: Uuid) -> Result<Option<PlaySession>> {
+        const QUERY: &str = "
+            SELECT * FROM sessions WHERE id=$1;
+        ";
+
+        let maybe_row = sqlx::query(QUERY)
+            .bind(&id)
+            .fetch_optional(&self.executor)
+            .await?;
+
+        let res = maybe_row.map(|row| -> Result<PlaySession> {
+            let name: String = row.try_get("name")?;
+            let access_token: String = row.try_get("access_token")?;
+            let refresh_token: String = row.try_get("refresh_token")?;
+            let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
+
+            if access_token == "" {
+                return Ok(PlaySession {
+                    id,
+                    name,
+                    token: None,
+                });
+            }
+
+            let rt_option = if refresh_token == "" {
+                None
+            } else {
+                Some(refresh_token)
+            };
+
+            let mut token = Token::default();
+            token.access_token = access_token;
+            token.expires_at = Some(expires_at);
+            token.refresh_token = rt_option;
+            token.scopes = scopes();
+
+            Ok(PlaySession {
+                id,
+                name,
+                token: Some(token),
+            })
+        });
+
+        todo!()
     }
 }
 
@@ -257,44 +374,55 @@ mod queries {
         track_id text REFERENCES tracks (id)
     );
 ";
+
+    pub const CREATE_SESSION_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS sessions (
+        id uuid PRIMARY KEY, 
+        name text,
+        access_token text,
+        refresh_token text,
+        expires_at timestamp
+    );
+";
 }
 
 #[cfg(test)]
 mod tests {
-    use core::panic;
-    use std::{any::Any, future::Future};
 
     use super::*;
 
-    async fn setup_db() -> PostgressDatabase {
+    async fn setup_db<'c>() -> PostgressDatabase {
         let db = PostgressDatabase::new().await.unwrap();
         db.create_tables().await.unwrap();
         db
     }
 
-    async fn teardown_tb(db: PostgressDatabase) {
+    async fn teardown_tb<'c>(db: PostgressDatabase) {
         const DROP_SCHEMA: &str = "DROP SCHEMA public CASCADE;";
         const RECREATE_SCHEMA: &str = "CREATE SCHEMA public;";
         const GRANT_TO_PUBLIC: &str = "GRANT ALL ON SCHEMA public TO public;";
 
-        sqlx::query(DROP_SCHEMA).execute(&db.pool).await.unwrap();
+        sqlx::query(DROP_SCHEMA)
+            .execute(&db.executor)
+            .await
+            .unwrap();
         sqlx::query(RECREATE_SCHEMA)
-            .execute(&db.pool)
+            .execute(&db.executor)
             .await
             .unwrap();
 
         sqlx::query(GRANT_TO_PUBLIC)
-            .execute(&db.pool)
+            .execute(&db.executor)
             .await
             .unwrap();
     }
 
-    async fn db_test(test: impl Future<Output = Result<()>>) -> Result<()> {
-        let db = setup_db().await;
-        let test_result = test.await; //TODO: handle panics
-        teardown_tb(db).await;
-        test_result
-    }
+    // async fn db_test(test: impl Future<Output = Result<()>>) -> Result<()> {
+    //     let db = setup_db().await;
+    //     let test_result = test.await; //TODO: handle panics
+    //     teardown_tb(db).await;
+    //     test_result
+    // }
 
     #[tokio::test]
     async fn test_add_track_to_queue() -> Result<()> {

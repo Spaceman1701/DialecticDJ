@@ -5,9 +5,12 @@
 
 use std::str::FromStr;
 
-use ddj_core::types::{PlayerState, Track};
+use ddj_core::types::{
+    AuthenticateClientMessage, CreateSessionResponse, PlayerState, Session, Track,
+};
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 const SEARCH: &str = "search";
 const DEVICE_SELECTION: &str = "device_selection";
@@ -33,6 +36,8 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
                             Some(code) => {
                                 let cloned = code.clone();
                                 orders.perform_cmd(async move {
+                                    
+
                                     send_code(&cloned).await;
                                 });
                                 Page::Landing
@@ -72,6 +77,7 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
             in_progress: false,
             error: None,
         },
+        session: None,
     }
 }
 
@@ -106,6 +112,7 @@ struct Model {
     currently_playing: Option<Track>,
     queue: Vec<Track>,
     search_model: SearchModel,
+    session: Option<Session>,
 }
 
 struct SearchModel {
@@ -127,7 +134,7 @@ enum Msg {
     SearchResultAvailable(fetch::Result<Vec<Track>>),
     TrackClicked(Track),
     UpdateState,
-    AuthUrlAvailable(fetch::Result<String>),
+    AuthUrlAvailable(fetch::Result<CreateSessionResponse>),
 }
 
 // `update` describes how to handle each `Msg`.
@@ -183,9 +190,10 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             }
         }
         Msg::AuthUrlAvailable(url) => match url {
-            Ok(auth_url) => {
+            Ok(session) => {
                 log!("got auth url");
-                model.page = Page::Login(Some(auth_url));
+                model.page = Page::Login(Some(session.auth_link));
+                model.session = Some(session.session);
             }
             Err(err) => {
                 log!("failed to recieve redirect URL: {}",);
@@ -228,17 +236,27 @@ async fn add_track_to_queue(track: &Track) -> fetch::Result<()> {
     Ok(())
 }
 
-async fn request_login_url() -> fetch::Result<String> {
-    let request =
-        Request::new(format!("{}/start_auth_flow", BASE_URL)).method(Method::Post);
+async fn request_login_url() -> fetch::Result<CreateSessionResponse> {
+    let request = Request::new(format!("{}/new_session/{}", BASE_URL, "test-session"))
+        .method(Method::Post);
     let response = fetch(request).await?;
-    let payload = response.text().await?;
+    let payload = response.json().await?;
     Ok(payload)
 }
 
-async fn send_code(code: &str) {
-    let request = Request::new(format!("{}/finish_auth_flow/{}", BASE_URL, code))
-        .method(Method::Post);
+async fn send_code(code: &str, session_id: Uuid) {
+    let message = AuthenticateClientMessage {
+        session_id: session_id,
+        auth_code: code.to_owned(),
+    };
+    let request = Request::new(format!(
+        "{}/authenticate_session/{}",
+        BASE_URL,
+        session_id.to_string()
+    ))
+    .method(Method::Post)
+    .json(&message)
+    .unwrap();
     let response = fetch(request).await.unwrap();
 }
 

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Artist {
@@ -20,6 +21,24 @@ pub struct Track {
 pub struct PlayerState {
     pub current_track: Option<Track>,
     pub queue: Vec<Track>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Session {
+    pub id: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateSessionResponse {
+    pub session: Session,
+    pub auth_link: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AuthenticateClientMessage {
+    pub session_id: Uuid,
+    pub auth_code: String,
 }
 
 #[cfg(feature = "rspotify")]

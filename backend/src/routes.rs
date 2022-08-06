@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
-use ddj_core::types::{PlayerState, Track};
+use ddj_core::types::{CreateSessionResponse, PlayerState, Session, Track};
 use rocket::{http::Status, response::status::BadRequest, serde::json::Json, State};
 use rspotify::{
     clients::{BaseClient, OAuthClient},
@@ -138,4 +138,47 @@ pub async fn finish_auth_flow(code: String, auth: &State<ManagedAuthState>) {
     let auth_state = AuthenticationState::new(client).await;
     *auth.lock().await = Some(auth_state);
     println!("successfully authenticated client")
+}
+
+#[post("/new_session/<name>")]
+pub async fn create_session(
+    name: &str,
+    store: &State<Store>,
+) -> Result<Json<CreateSessionResponse>, Status> {
+    let creds = Credentials::from_env().unwrap();
+    let mut oauth_info = OAuth::from_env(authentication::scopes()).unwrap();
+    oauth_info.redirect_uri = "http://192.168.0.22:8080#login".to_owned();
+    let client = AuthCodeSpotify::new(creds, oauth_info);
+    let authorize_url = client.get_authorize_url(true).unwrap();
+
+    let res = store.create_session(name).await;
+    match res {
+        Ok(session) => Ok(Json(CreateSessionResponse {
+            session: Session {
+                id: session.id,
+                name: name.to_owned(),
+            },
+            auth_link: authorize_url,
+        })),
+        Err(e) => {
+            println!("failed to create session: {}", e);
+            Err(Status::InternalServerError)
+        }
+    }
+}
+
+#[post("/authenticate_session/<id>", data = "<code>")]
+pub async fn authenticate_session(id: &str, code: &str, store: &State<Store>) {
+    let creds = Credentials::from_env().unwrap();
+    let mut oauth_info = OAuth::from_env(authentication::scopes()).unwrap();
+    oauth_info.redirect_uri = "http://192.168.0.22:8080#login".to_owned();
+    let mut client = AuthCodeSpotify::new(creds, oauth_info);
+    client.request_token(&code).await.unwrap();
+    let session_id = uuid::Uuid::from_str(id).unwrap();
+
+    let mut session = store.get_session(session_id).await.unwrap().unwrap();
+
+    session.token = client.token.lock().await.unwrap().clone();
+
+    store.update_session(&session).await.unwrap();
 }

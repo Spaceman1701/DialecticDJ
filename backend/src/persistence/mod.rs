@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use uuid::Uuid;
 
-use self::model::SpotifyTrack;
+use self::model::{PlaySession, SpotifyTrack};
 
 pub mod model;
 pub mod pgsql;
@@ -15,6 +16,9 @@ pub trait PersistentStore {
     async fn add_track_to_queue(&self, track: SpotifyTrack) -> Result<()>;
     async fn pop_track_from_queue(&self) -> Result<Option<SpotifyTrack>>;
     async fn get_track_by_id(&self, id: &str) -> Result<SpotifyTrack>;
+    async fn create_session(&self, name: &str) -> Result<PlaySession>;
+    async fn update_session(&self, session: &PlaySession) -> Result<()>;
+    async fn get_session(&self, id: Uuid) -> Result<Option<PlaySession>>;
 }
 
 ///Literally a Box<dyn PersistentStore + Send + Sync>
